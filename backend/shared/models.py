@@ -42,7 +42,11 @@ class Upload:
     fileName: str
     blobPath: str
     uploadedAt: datetime
-    status: str  # pending | processing | complete | failed
+    status: str              # pending | processing | complete | failed
+    snapshotDate: str = ''   # ISO date of the CloudHealth export
+    savingsTotal: float = 0.0
+    snapshotNumber: int = 1
+    isRelabeled: bool = False
 
     def to_dict(self) -> dict:
         return {
@@ -55,6 +59,10 @@ class Upload:
             "blobPath": self.blobPath,
             "uploadedAt": self.uploadedAt.isoformat(),
             "status": self.status,
+            "snapshotDate": self.snapshotDate,
+            "savingsTotal": self.savingsTotal,
+            "snapshotNumber": self.snapshotNumber,
+            "isRelabeled": self.isRelabeled,
         }
 
     @classmethod
@@ -69,6 +77,10 @@ class Upload:
             blobPath=d["blobPath"],
             uploadedAt=datetime.fromisoformat(d["uploadedAt"]),
             status=d["status"],
+            snapshotDate=d.get("snapshotDate", ""),
+            savingsTotal=d.get("savingsTotal", 0.0),
+            snapshotNumber=d.get("snapshotNumber", 1),
+            isRelabeled=d.get("isRelabeled", False),
         )
 
 

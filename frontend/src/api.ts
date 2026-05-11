@@ -1,4 +1,4 @@
-import type { Customer, Report, ReportResponse, TrendsResponse, UploadResult } from './types'
+import type { Customer, Report, ReportResponse, TrendsResponse, UploadRecord, UploadResult } from './types'
 
 const BASE = (import.meta.env.VITE_API_URL ?? '') + '/api'
 
@@ -47,4 +47,19 @@ export function buildReport(body: {
 
 export function fetchReports(customerId: string): Promise<Report[]> {
   return request<Report[]>(`${BASE}/reports/${customerId}`)
+}
+
+export function fetchUploads(customerId: string): Promise<UploadRecord[]> {
+  return request<UploadRecord[]>(`${BASE}/uploads/${customerId}`)
+}
+
+export function patchUpload(
+  uploadId: string,
+  body: { customerId: string; serviceType: string },
+): Promise<UploadRecord> {
+  return request<UploadRecord>(`${BASE}/upload/${uploadId}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
 }

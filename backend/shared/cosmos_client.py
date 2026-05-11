@@ -110,9 +110,10 @@ def list_uploads(customer_id: str, month: Optional[int] = None, year: Optional[i
     if year is not None:
         filters.append("c.year = @year")
         params.append({"name": "@year", "value": year})
-    query = f"SELECT * FROM c WHERE {' AND '.join(filters)} ORDER BY c.uploadedAt DESC"
+    query = f"SELECT * FROM c WHERE {' AND '.join(filters)}"
     items = container.query_items(query=query, parameters=params, partition_key=customer_id)
-    return [Upload.from_dict(i) for i in items]
+    results = [Upload.from_dict(i) for i in items]
+    return sorted(results, key=lambda u: (u.snapshotDate or u.uploadedAt.isoformat()), reverse=True)
 
 
 def update_upload(upload: Upload) -> Upload:

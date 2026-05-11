@@ -91,6 +91,22 @@ export interface ReportResponse {
   }>
 }
 
+export interface UploadRecord {
+  id: string
+  customerId: string
+  month: number
+  year: number
+  serviceType: string
+  fileName: string
+  blobPath: string
+  uploadedAt: string
+  status: string
+  snapshotDate: string
+  savingsTotal: number
+  snapshotNumber: number
+  isRelabeled: boolean
+}
+
 export interface Report {
   id: string
   customerId: string

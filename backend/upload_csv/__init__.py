@@ -104,6 +104,10 @@ def _handle(req: func.HttpRequest) -> func.HttpResponse:
         blobPath=blob_path,
         uploadedAt=datetime.now(timezone.utc),
         status='processed',
+        snapshotDate=snapshot_date_str,
+        savingsTotal=agg['savingsTotal'],
+        snapshotNumber=snapshot_number,
+        isRelabeled=False,
     )
     cosmos_client.create_upload(upload)
 
