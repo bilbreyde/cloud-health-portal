@@ -6,7 +6,22 @@
       "value": "dev"
     },
     "location": {
-      "value": "eastus"
+      "value": "eastus2"
+    },
+    "cosmosDbAccountName": {
+      "value": "cosmosdbrgcloudhealthportal7d7063"
+    },
+    "storageAccountName": {
+      "value": "strgcloudhealthportal7d7"
+    },
+    "keyVaultName": {
+      "value": "kv-cloud-health"
+    },
+    "aiEndpoint": {
+      "value": "https://aih-cloud-health.cognitiveservices.azure.com/"
+    },
+    "aiDeploymentName": {
+      "value": "gpt-5.1"
     }
   }
 }

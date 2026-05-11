@@ -1,20 +1,186 @@
-from dataclasses import dataclass
-from datetime import date
+from dataclasses import dataclass, field
+from datetime import datetime
+from typing import Any, Optional
 
 
 @dataclass
-class CostRecord:
-    customer_id: str
-    service: str
-    amount: float
-    currency: str
-    period_start: date
-    period_end: date
+class Customer:
+    id: str
+    name: str
+    slug: str
+    created_at: datetime
+    settings: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "customerId": self.id,
+            "name": self.name,
+            "slug": self.slug,
+            "created_at": self.created_at.isoformat(),
+            "settings": self.settings,
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "Customer":
+        return cls(
+            id=d["id"],
+            name=d["name"],
+            slug=d["slug"],
+            created_at=datetime.fromisoformat(d["created_at"]),
+            settings=d.get("settings", {}),
+        )
 
 
 @dataclass
-class TrendResult:
-    customer_id: str
-    service: str
-    trend_pct: float
-    recommendation: str
+class Upload:
+    id: str
+    customerId: str
+    month: int
+    year: int
+    serviceType: str
+    fileName: str
+    blobPath: str
+    uploadedAt: datetime
+    status: str  # pending | processing | complete | failed
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "customerId": self.customerId,
+            "month": self.month,
+            "year": self.year,
+            "serviceType": self.serviceType,
+            "fileName": self.fileName,
+            "blobPath": self.blobPath,
+            "uploadedAt": self.uploadedAt.isoformat(),
+            "status": self.status,
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "Upload":
+        return cls(
+            id=d["id"],
+            customerId=d["customerId"],
+            month=d["month"],
+            year=d["year"],
+            serviceType=d["serviceType"],
+            fileName=d["fileName"],
+            blobPath=d["blobPath"],
+            uploadedAt=datetime.fromisoformat(d["uploadedAt"]),
+            status=d["status"],
+        )
+
+
+@dataclass
+class TrendData:
+    id: str
+    customerId: str
+    month: int
+    year: int
+    serviceType: str
+    reportKey: str
+    savingsTotal: float
+    rowCount: int
+    momDelta: float        # month-over-month delta as a decimal (e.g. 0.12 = +12%)
+    direction: str         # up | down | flat
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "customerId": self.customerId,
+            "month": self.month,
+            "year": self.year,
+            "serviceType": self.serviceType,
+            "reportKey": self.reportKey,
+            "savingsTotal": self.savingsTotal,
+            "rowCount": self.rowCount,
+            "momDelta": self.momDelta,
+            "direction": self.direction,
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "TrendData":
+        return cls(
+            id=d["id"],
+            customerId=d["customerId"],
+            month=d["month"],
+            year=d["year"],
+            serviceType=d["serviceType"],
+            reportKey=d["reportKey"],
+            savingsTotal=d["savingsTotal"],
+            rowCount=d["rowCount"],
+            momDelta=d["momDelta"],
+            direction=d["direction"],
+        )
+
+
+@dataclass
+class Report:
+    id: str
+    customerId: str
+    month: int
+    year: int
+    status: str            # draft | review | final
+    blobPath: str
+    generatedAt: datetime
+    joelNotes: Optional[str] = None
+    narrativeDraft: Optional[str] = None
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "customerId": self.customerId,
+            "month": self.month,
+            "year": self.year,
+            "status": self.status,
+            "blobPath": self.blobPath,
+            "generatedAt": self.generatedAt.isoformat(),
+            "joelNotes": self.joelNotes,
+            "narrativeDraft": self.narrativeDraft,
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "Report":
+        return cls(
+            id=d["id"],
+            customerId=d["customerId"],
+            month=d["month"],
+            year=d["year"],
+            status=d["status"],
+            blobPath=d["blobPath"],
+            generatedAt=datetime.fromisoformat(d["generatedAt"]),
+            joelNotes=d.get("joelNotes"),
+            narrativeDraft=d.get("narrativeDraft"),
+        )
+
+
+@dataclass
+class Template:
+    id: str
+    customerId: str
+    fileName: str
+    blobPath: str
+    isActive: bool
+    uploadedAt: datetime
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "customerId": self.customerId,
+            "fileName": self.fileName,
+            "blobPath": self.blobPath,
+            "isActive": self.isActive,
+            "uploadedAt": self.uploadedAt.isoformat(),
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "Template":
+        return cls(
+            id=d["id"],
+            customerId=d["customerId"],
+            fileName=d["fileName"],
+            blobPath=d["blobPath"],
+            isActive=d["isActive"],
+            uploadedAt=datetime.fromisoformat(d["uploadedAt"]),
+        )
