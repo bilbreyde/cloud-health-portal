@@ -1,14 +1,77 @@
 name: Deploy
 
+# Required GitHub secrets:
+#   AZURE_CREDENTIALS          - JSON output of: az ad sp create-for-rbac --sdk-auth
+#   AZURE_SUBSCRIPTION_ID      - Azure subscription ID (7d70637f-...)
+#   COSMOS_CONNECTION_STRING   - Cosmos DB primary connection string (override Bicep value)
+#   STORAGE_CONNECTION_STRING  - Storage account connection string (override Bicep value)
+#   AI_API_KEY                 - Azure AI Foundry / OpenAI API key
+
 on:
   push:
     branches: [main]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Target environment
+        type: choice
+        options: [dev, staging, prod]
+        default: dev
+        required: true
+
+env:
+  RESOURCE_GROUP: rg-cloud-health-portal
 
 jobs:
+  # ── Job 1: Deploy Bicep, capture resource names ──────────────────────────────
+  deploy-infra:
+    name: Deploy Bicep Infrastructure
+    runs-on: ubuntu-latest
+    environment: production
+    outputs:
+      functionAppName: ${{ steps.outputs.outputs.functionAppName }}
+      staticWebAppName: ${{ steps.outputs.outputs.staticWebAppName }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Deploy Bicep (incremental)
+        run: |
+          az deployment group create \
+            --subscription ${{ secrets.AZURE_SUBSCRIPTION_ID }} \
+            --resource-group ${{ env.RESOURCE_GROUP }} \
+            --template-file infra/main.bicep \
+            --parameters @infra/parameters.dev.json \
+            --name chp-${{ github.run_number }} \
+            --mode Incremental
+
+      - name: Capture deployment outputs
+        id: outputs
+        run: |
+          FUNC_APP=$(az deployment group show \
+            --subscription ${{ secrets.AZURE_SUBSCRIPTION_ID }} \
+            --resource-group ${{ env.RESOURCE_GROUP }} \
+            --name chp-${{ github.run_number }} \
+            --query "properties.outputs.functionAppName.value" -o tsv)
+          echo "functionAppName=$FUNC_APP" >> "$GITHUB_OUTPUT"
+
+          SWA_NAME=$(az deployment group show \
+            --subscription ${{ secrets.AZURE_SUBSCRIPTION_ID }} \
+            --resource-group ${{ env.RESOURCE_GROUP }} \
+            --name chp-${{ github.run_number }} \
+            --query "properties.outputs.staticWebAppName.value" -o tsv)
+          echo "staticWebAppName=$SWA_NAME" >> "$GITHUB_OUTPUT"
+
+  # ── Job 2: Set secrets + publish Function App ─────────────────────────────────
   deploy-backend:
     name: Deploy Azure Functions
     runs-on: ubuntu-latest
     environment: production
+    needs: deploy-infra
     steps:
       - uses: actions/checkout@v4
 
@@ -24,15 +87,29 @@ jobs:
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
 
-      - name: Deploy Functions
+      - name: Set Function App environment variables
+        run: |
+          az functionapp config appsettings set \
+            --subscription ${{ secrets.AZURE_SUBSCRIPTION_ID }} \
+            --resource-group ${{ env.RESOURCE_GROUP }} \
+            --name ${{ needs.deploy-infra.outputs.functionAppName }} \
+            --settings \
+              "COSMOS_CONNECTION_STRING=${{ secrets.COSMOS_CONNECTION_STRING }}" \
+              "STORAGE_CONNECTION_STRING=${{ secrets.STORAGE_CONNECTION_STRING }}" \
+              "AI_API_KEY=${{ secrets.AI_API_KEY }}" \
+            --output none
+
+      - name: Publish Function App
         run: |
           cd backend
-          func azure functionapp publish ${{ secrets.AZURE_FUNCTION_APP_NAME }} --python
+          func azure functionapp publish ${{ needs.deploy-infra.outputs.functionAppName }} --python
 
+  # ── Job 3: Build frontend + deploy to Static Web App ─────────────────────────
   deploy-frontend:
     name: Deploy Static Web App
     runs-on: ubuntu-latest
     environment: production
+    needs: deploy-infra
     steps:
       - uses: actions/checkout@v4
 
@@ -40,16 +117,31 @@ jobs:
         with:
           node-version: '24'
 
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
       - name: Build frontend
         working-directory: frontend
         run: |
           npm install
           npm run build
 
+      - name: Get Static Web App deployment token
+        id: swa-token
+        run: |
+          SWA_TOKEN=$(az staticwebapp secrets list \
+            --subscription ${{ secrets.AZURE_SUBSCRIPTION_ID }} \
+            --name ${{ needs.deploy-infra.outputs.staticWebAppName }} \
+            --query "properties.apiKey" -o tsv)
+          echo "::add-mask::$SWA_TOKEN"
+          echo "token=$SWA_TOKEN" >> "$GITHUB_OUTPUT"
+
       - name: Deploy to Azure Static Web Apps
         uses: Azure/static-web-apps-deploy@v1
         with:
-          azure_static_web_apps_api_token: ${{ secrets.AZURE_STATIC_WEB_APPS_API_TOKEN }}
+          azure_static_web_apps_api_token: ${{ steps.swa-token.outputs.token }}
           repo_token: ${{ secrets.GITHUB_TOKEN }}
           action: upload
           app_location: frontend
