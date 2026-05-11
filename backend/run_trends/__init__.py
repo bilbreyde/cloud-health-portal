@@ -45,46 +45,68 @@ def _handle(req: func.HttpRequest) -> func.HttpResponse:
     except ValueError:
         return _json({'error': 'Date range parameters must be integers'}, 400)
 
-    # ── Fetch & filter ─────────────────────────────────────────────────────────
+    # ── Fetch & filter to requested date range ─────────────────────────────────
     all_trends = cosmos_client.list_trends(customer_id)
     trends = [
         t for t in all_trends
         if (start_year, start_month) <= (t.year, t.month) <= (end_year, end_month)
     ]
 
+    empty = {
+        'customerId': customer_id,
+        'monthly_totals': [],
+        'top_movers_up': [],
+        'top_movers_down': [],
+        'service_summary': [],
+        'snapshots_detail': [],
+    }
     if not trends:
-        return _json({
-            'customerId': customer_id,
-            'monthly_totals': [],
-            'top_movers_up': [],
-            'top_movers_down': [],
-            'service_summary': [],
-        })
+        return _json(empty)
 
-    # ── Index: (year, month) → {serviceType → savingsTotal} ───────────────────
-    # When multiple uploads exist for the same period+service, keep the latest
-    # by taking the max savingsTotal (conservative — upsert semantics).
+    # ── snapshots_detail: every individual snapshot, chronological ─────────────
+    snapshots_detail = sorted(
+        [
+            {
+                'serviceType': t.serviceType,
+                'year': t.year,
+                'month': t.month,
+                'snapshotDate': t.snapshotDate,
+                'snapshotNumber': t.snapshotNumber,
+                'savingsTotal': t.savingsTotal,
+                'rowCount': t.rowCount,
+            }
+            for t in trends
+        ],
+        key=lambda x: (x['year'], x['month'], x['snapshotDate'] or '', x['snapshotNumber']),
+    )
+
+    # ── Average snapshots within each (year, month, serviceType) ──────────────
+    # Bi-weekly exports mean 2-3 snapshots per month; the monthly signal is
+    # their average so MoM comparisons are consistent with the Word report.
+    snapshot_groups: Dict[Tuple[int, int, str], List[float]] = defaultdict(list)
+    for t in trends:
+        snapshot_groups[(t.year, t.month, t.serviceType)].append(t.savingsTotal)
+
     by_period: Dict[Tuple[int, int], Dict[str, float]] = defaultdict(dict)
-    for t in sorted(trends, key=lambda x: (x.year, x.month)):
-        by_period[(t.year, t.month)][t.serviceType] = t.savingsTotal
+    for (yr, mo, svc), vals in snapshot_groups.items():
+        by_period[(yr, mo)][svc] = round(sum(vals) / len(vals), 2)
 
     sorted_periods = sorted(by_period.keys())
 
     # ── monthly_totals ─────────────────────────────────────────────────────────
     monthly_totals = []
-    for (year, month) in sorted_periods:
-        by_svc = by_period[(year, month)]
+    for (yr, mo) in sorted_periods:
+        by_svc = by_period[(yr, mo)]
         monthly_totals.append({
-            'month': month,
-            'year': year,
+            'month': mo,
+            'year': yr,
             'total': round(sum(by_svc.values()), 2),
             'byService': {k: round(v, 2) for k, v in sorted(by_svc.items())},
         })
 
-    # ── Per-service time series ────────────────────────────────────────────────
+    # ── Per-service chronological series (averaged monthly values) ─────────────
     all_services = sorted({svc for svc_map in by_period.values() for svc in svc_map})
 
-    # series[svc] = [(period_tuple, savings_float), ...]  chronological
     service_series: Dict[str, List[Tuple[Tuple[int, int], float]]] = {}
     for svc in all_services:
         service_series[svc] = [
@@ -93,13 +115,11 @@ def _handle(req: func.HttpRequest) -> func.HttpResponse:
             if svc in by_period[period]
         ]
 
-    # ── Latest MoM delta per service ──────────────────────────────────────────
+    # ── Latest MoM delta (averaged month vs averaged previous month) ───────────
     latest_deltas: Dict[str, Tuple[float, str]] = {}
     for svc, series in service_series.items():
         if len(series) >= 2:
-            prev_val = series[-2][1]
-            curr_val = series[-1][1]
-            delta, direction = compute_mom_delta(curr_val, prev_val)
+            delta, direction = compute_mom_delta(series[-1][1], series[-2][1])
         else:
             delta, direction = 0.0, 'Flat'
         latest_deltas[svc] = (delta, direction)
@@ -118,13 +138,13 @@ def _handle(req: func.HttpRequest) -> func.HttpResponse:
         key=lambda r: r['momDelta'],
     )[:5]
 
-    # ── service_summary ────────────────────────────────────────────────────────
+    # ── service_summary (calendar view: jan–dec averages across all years) ─────
     service_summary = []
     for svc in all_services:
         series = service_series[svc]
 
         month_buckets: Dict[int, List[float]] = defaultdict(list)
-        for (yr, mo), val in series:
+        for (_, mo), val in series:
             month_buckets[mo].append(val)
 
         month_avgs = {
@@ -147,4 +167,5 @@ def _handle(req: func.HttpRequest) -> func.HttpResponse:
         'top_movers_up': top_movers_up,
         'top_movers_down': top_movers_down,
         'service_summary': service_summary,
+        'snapshots_detail': snapshots_detail,
     })

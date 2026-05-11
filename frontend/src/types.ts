@@ -39,12 +39,23 @@ export interface ServiceRow {
   dec?: number | null
 }
 
+export interface SnapshotDetail {
+  serviceType: string
+  year: number
+  month: number
+  snapshotDate: string
+  snapshotNumber: number
+  savingsTotal: number
+  rowCount: number
+}
+
 export interface TrendsResponse {
   customerId: string
   monthly_totals: MonthlyTotal[]
   top_movers_up: Mover[]
   top_movers_down: Mover[]
   service_summary: ServiceRow[]
+  snapshots_detail: SnapshotDetail[]
 }
 
 export interface UploadResult {
@@ -53,6 +64,8 @@ export interface UploadResult {
   serviceType: string
   savingsTotal: number
   rowCount: number
+  snapshotDate?: string
+  snapshotNumber?: number
   error?: string
 }
 

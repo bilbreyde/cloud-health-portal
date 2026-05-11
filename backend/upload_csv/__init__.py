@@ -1,7 +1,7 @@
 import json
 import logging
 import uuid
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from io import BytesIO
 
 import azure.functions as func
@@ -26,7 +26,7 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
 
 
 def _handle(req: func.HttpRequest) -> func.HttpResponse:
-    # ── Form fields (multipart) or query params ────────────────────────────────
+    # ── Form fields (multipart) ────────────────────────────────────────────────
     def field(name: str) -> str:
         return (req.params.get(name) or req.form.get(name, '')).strip()
 
@@ -34,6 +34,7 @@ def _handle(req: func.HttpRequest) -> func.HttpResponse:
     month_str = field('month')
     year_str = field('year')
     service_type_hint = field('serviceType')
+    snapshot_date_str = field('snapshotDate') or date.today().isoformat()
 
     if not customer_id:
         return _json({'error': 'customerId is required'}, 400)
@@ -50,6 +51,11 @@ def _handle(req: func.HttpRequest) -> func.HttpResponse:
         return _json({'error': 'month must be 1–12'}, 400)
     if year < 2026:
         return _json({'error': 'year must be 2026 or later'}, 400)
+
+    try:
+        date.fromisoformat(snapshot_date_str)
+    except ValueError:
+        return _json({'error': 'snapshotDate must be YYYY-MM-DD'}, 400)
 
     # ── File ───────────────────────────────────────────────────────────────────
     uploaded = req.files.get('file')
@@ -78,6 +84,11 @@ def _handle(req: func.HttpRequest) -> func.HttpResponse:
     report_key = normalize_filename_to_key(filename)
     agg = aggregate_csv(df, service_type)
 
+    # ── Determine snapshot number ──────────────────────────────────────────────
+    # Count existing TrendData records for this customer/year/month/service.
+    existing = cosmos_client.list_trends(customer_id, year=year, service_type=service_type)
+    snapshot_number = sum(1 for t in existing if t.month == month) + 1
+
     # ── Blob upload ────────────────────────────────────────────────────────────
     blob_path = blob_client.upload_csv(customer_id, month, year, service_type, file_bytes, filename)
 
@@ -97,7 +108,6 @@ def _handle(req: func.HttpRequest) -> func.HttpResponse:
     cosmos_client.create_upload(upload)
 
     # ── Cosmos: TrendData record ───────────────────────────────────────────────
-    # MoM delta is 0/Flat at upload time; run_trends recomputes it on read.
     trend = TrendData(
         id=str(uuid.uuid4()),
         customerId=customer_id,
@@ -109,6 +119,8 @@ def _handle(req: func.HttpRequest) -> func.HttpResponse:
         rowCount=agg['rowCount'],
         momDelta=0.0,
         direction='Flat',
+        snapshotDate=snapshot_date_str,
+        snapshotNumber=snapshot_number,
     )
     cosmos_client.upsert_trend(trend)
 
@@ -118,4 +130,6 @@ def _handle(req: func.HttpRequest) -> func.HttpResponse:
         'serviceType': service_type,
         'savingsTotal': agg['savingsTotal'],
         'rowCount': agg['rowCount'],
+        'snapshotDate': snapshot_date_str,
+        'snapshotNumber': snapshot_number,
     })

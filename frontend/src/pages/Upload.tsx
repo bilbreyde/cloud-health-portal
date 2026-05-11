@@ -1,5 +1,5 @@
-import { useRef, useState } from 'react'
-import { uploadCsv } from '../api'
+import { useEffect, useRef, useState } from 'react'
+import { fetchTrends, uploadCsv } from '../api'
 import CustomerSelector from '../components/CustomerSelector'
 import type { UploadResult } from '../types'
 
@@ -21,6 +21,10 @@ function detectServiceType(filename: string): string {
   return 'Consolidated'
 }
 
+function todayIso(): string {
+  return new Date().toISOString().slice(0, 10)
+}
+
 interface FileEntry {
   file: File
   serviceType: string
@@ -36,10 +40,29 @@ export default function Upload() {
   const [customerId, setCustomerId] = useState('')
   const [month, setMonth] = useState(today.month)
   const [year, setYear] = useState(2026)
+  const [snapshotDate, setSnapshotDate] = useState(todayIso())
+  const [snapshotsByService, setSnapshotsByService] = useState<Record<string, number>>({})
   const [entries, setEntries] = useState<FileEntry[]>([])
   const [dragOver, setDragOver] = useState(false)
   const [uploading, setUploading] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
+
+  // Fetch existing snapshot counts whenever customer/month/year changes
+  useEffect(() => {
+    if (!customerId) { setSnapshotsByService({}); return }
+    let cancelled = false
+    fetchTrends(customerId, { startMonth: month, startYear: year, endMonth: month, endYear: year })
+      .then(data => {
+        if (cancelled) return
+        const counts: Record<string, number> = {}
+        for (const s of data.snapshots_detail ?? []) {
+          counts[s.serviceType] = (counts[s.serviceType] ?? 0) + 1
+        }
+        setSnapshotsByService(counts)
+      })
+      .catch(() => { if (!cancelled) setSnapshotsByService({}) })
+    return () => { cancelled = true }
+  }, [customerId, month, year])
 
   function addFiles(files: FileList | File[]) {
     const arr = Array.from(files).filter(f => f.name.endsWith('.csv'))
@@ -62,6 +85,15 @@ export default function Upload() {
     setEntries(prev => prev.map((e, i) => i === idx ? { ...e, serviceType: svc } : e))
   }
 
+  // Snapshot number = existing for this service + how many of the same service
+  // type appear before this entry in the current batch + 1
+  function getSnapshotNum(idx: number): number {
+    const svc = entries[idx].serviceType
+    const existing = snapshotsByService[svc] ?? 0
+    const batchBefore = entries.slice(0, idx).filter(e => e.serviceType === svc).length
+    return existing + batchBefore + 1
+  }
+
   async function uploadAll() {
     if (!customerId || !entries.length) return
     setUploading(true)
@@ -78,6 +110,7 @@ export default function Upload() {
       fd.append('month', String(month))
       fd.append('year', String(year))
       fd.append('serviceType', updated[i].serviceType)
+      fd.append('snapshotDate', snapshotDate)
 
       try {
         const result = await uploadCsv(fd)
@@ -87,11 +120,27 @@ export default function Upload() {
       }
       setEntries([...updated])
     }
+
+    // Refresh snapshot counts after uploads complete
+    if (customerId) {
+      fetchTrends(customerId, { startMonth: month, startYear: year, endMonth: month, endYear: year })
+        .then(data => {
+          const counts: Record<string, number> = {}
+          for (const s of data.snapshots_detail ?? []) {
+            counts[s.serviceType] = (counts[s.serviceType] ?? 0) + 1
+          }
+          setSnapshotsByService(counts)
+        })
+        .catch(() => {})
+    }
+
     setUploading(false)
   }
 
   const svcs = ['EC2','RDS','S3','EBS','ElastiCache','Redshift','OpenSearch','DynamoDB','Consolidated']
   const pendingCount = entries.filter(e => e.status === 'pending').length
+  const totalExisting = Object.values(snapshotsByService).reduce((a, b) => a + b, 0)
+  const monthName = MONTH_ABBR[month - 1]
 
   return (
     <main className="page">
@@ -102,17 +151,39 @@ export default function Upload() {
           <CustomerSelector value={customerId} onChange={setCustomerId} />
           <div className="field">
             <label>Month</label>
-            <select value={month} onChange={e => setMonth(+e.target.value)}>
+            <select value={month} onChange={e => { setMonth(+e.target.value); setEntries([]) }}>
               {MONTH_ABBR.map((m, i) => <option key={m} value={i + 1}>{m}</option>)}
             </select>
           </div>
           <div className="field">
             <label>Year</label>
-            <select value={year} onChange={e => setYear(+e.target.value)}>
+            <select value={year} onChange={e => { setYear(+e.target.value); setEntries([]) }}>
               {[2026, 2027, 2028].map(y => <option key={y} value={y}>{y}</option>)}
             </select>
           </div>
+          <div className="field">
+            <label>Report Date (snapshot date)</label>
+            <input
+              type="date"
+              value={snapshotDate}
+              max={todayIso()}
+              onChange={e => setSnapshotDate(e.target.value)}
+              style={{ fontFamily: 'inherit', fontSize: 14, padding: '5px 8px',
+                       border: '1px solid var(--border)', borderRadius: 6, background: 'var(--bg)' }}
+            />
+          </div>
         </div>
+
+        {customerId && (
+          <div style={{
+            marginTop: 12, fontSize: 13,
+            color: totalExisting > 0 ? 'var(--blue, #3b82f6)' : 'var(--muted)',
+          }}>
+            {totalExisting > 0
+              ? `${totalExisting} snapshot${totalExisting !== 1 ? 's' : ''} already on file for ${monthName} ${year}`
+              : `No snapshots yet for ${monthName} ${year}`}
+          </div>
+        )}
       </div>
 
       <div className="card">
@@ -147,7 +218,15 @@ export default function Upload() {
           <div className="table-wrap">
             <table>
               <thead>
-                <tr><th>File</th><th>Size</th><th>Service Type</th><th>Status</th><th>Savings Total</th><th></th></tr>
+                <tr>
+                  <th>File</th>
+                  <th>Size</th>
+                  <th>Service Type</th>
+                  <th>Snapshot #</th>
+                  <th>Status</th>
+                  <th>Savings Total</th>
+                  <th></th>
+                </tr>
               </thead>
               <tbody>
                 {entries.map((entry, i) => (
@@ -162,6 +241,11 @@ export default function Upload() {
                       ) : (
                         <span className="badge badge-blue">{entry.serviceType}</span>
                       )}
+                    </td>
+                    <td style={{ color: 'var(--muted)', fontSize: 13, whiteSpace: 'nowrap' }}>
+                      {entry.result?.snapshotNumber != null
+                        ? <span className="badge badge-blue">#{entry.result.snapshotNumber}</span>
+                        : <span style={{ color: 'var(--muted)' }}>#{getSnapshotNum(i)}</span>}
                     </td>
                     <td>
                       {entry.status === 'pending' && <span className="badge badge-gray">Pending</span>}

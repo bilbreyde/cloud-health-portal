@@ -82,8 +82,10 @@ class TrendData:
     reportKey: str
     savingsTotal: float
     rowCount: int
-    momDelta: float        # month-over-month delta as a decimal (e.g. 0.12 = +12%)
-    direction: str         # up | down | flat
+    momDelta: float        # month-over-month delta (stored as 0 at upload; recomputed by run_trends)
+    direction: str         # Up | Down | Flat
+    snapshotDate: str = ''    # ISO date of the CloudHealth export e.g. "2026-04-30"
+    snapshotNumber: int = 1   # 1, 2, 3 … within (month, year, serviceType)
 
     def to_dict(self) -> dict:
         return {
@@ -97,6 +99,8 @@ class TrendData:
             "rowCount": self.rowCount,
             "momDelta": self.momDelta,
             "direction": self.direction,
+            "snapshotDate": self.snapshotDate,
+            "snapshotNumber": self.snapshotNumber,
         }
 
     @classmethod
@@ -112,6 +116,8 @@ class TrendData:
             rowCount=d["rowCount"],
             momDelta=d["momDelta"],
             direction=d["direction"],
+            snapshotDate=d.get("snapshotDate", ""),
+            snapshotNumber=d.get("snapshotNumber", 1),
         )
 
 
