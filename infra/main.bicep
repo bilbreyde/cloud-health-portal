@@ -101,7 +101,7 @@ resource functionApp 'Microsoft.Web/sites@2023-01-01' = {
       ]
       cors: {
         allowedOrigins: [
-          'https://${prefix}-swa.azurestaticapps.net'
+          'https://red-sand-05177ba0f.7.azurestaticapps.net'
         ]
         supportCredentials: false
       }
@@ -140,16 +140,6 @@ resource staticWebApp 'Microsoft.Web/staticSites@2023-01-01' = {
       appLocation: 'frontend'
       outputLocation: 'dist'
     }
-  }
-}
-
-// Link the Function App as a backend for the Static Web App
-resource swaBackendLink 'Microsoft.Web/staticSites/linkedBackends@2023-01-01' = {
-  parent: staticWebApp
-  name: 'backend'
-  properties: {
-    backendResourceId: functionApp.id
-    region: location
   }
 }
 

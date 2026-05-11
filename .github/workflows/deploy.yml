@@ -30,6 +30,7 @@ jobs:
     environment: production
     outputs:
       functionAppName: ${{ steps.outputs.outputs.functionAppName }}
+      functionAppUrl: ${{ steps.outputs.outputs.functionAppUrl }}
       staticWebAppName: ${{ steps.outputs.outputs.staticWebAppName }}
     steps:
       - uses: actions/checkout@v4
@@ -58,6 +59,13 @@ jobs:
             --name chp-${{ github.run_number }} \
             --query "properties.outputs.functionAppName.value" -o tsv)
           echo "functionAppName=$FUNC_APP" >> "$GITHUB_OUTPUT"
+
+          FUNC_URL=$(az deployment group show \
+            --subscription ${{ secrets.AZURE_SUBSCRIPTION_ID }} \
+            --resource-group ${{ env.RESOURCE_GROUP }} \
+            --name chp-${{ github.run_number }} \
+            --query "properties.outputs.functionAppUrl.value" -o tsv)
+          echo "functionAppUrl=$FUNC_URL" >> "$GITHUB_OUTPUT"
 
           SWA_NAME=$(az deployment group show \
             --subscription ${{ secrets.AZURE_SUBSCRIPTION_ID }} \
@@ -124,6 +132,8 @@ jobs:
 
       - name: Build frontend
         working-directory: frontend
+        env:
+          VITE_API_URL: ${{ needs.deploy-infra.outputs.functionAppUrl }}
         run: |
           npm install
           npm run build

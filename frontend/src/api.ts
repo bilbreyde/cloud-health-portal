@@ -1,6 +1,6 @@
 import type { Customer, Report, ReportResponse, TrendsResponse, UploadResult } from './types'
 
-const BASE = '/api'
+const BASE = (import.meta.env.VITE_API_URL ?? '') + '/api'
 
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, init)
