@@ -1,6 +1,7 @@
 import os
 from typing import Optional
 
+from azure.core.exceptions import ResourceExistsError
 from azure.storage.blob import BlobServiceClient, ContentSettings
 
 _CONTAINER_NAME = "cloud-health-portal"
@@ -9,6 +10,13 @@ _CONTAINER_NAME = "cloud-health-portal"
 def _get_service() -> BlobServiceClient:
     conn_str = os.environ["STORAGE_CONNECTION_STRING"]
     return BlobServiceClient.from_connection_string(conn_str)
+
+
+def _ensure_container() -> None:
+    try:
+        _get_service().create_container(_CONTAINER_NAME)
+    except ResourceExistsError:
+        pass
 
 
 def _get_blob(blob_path: str):
@@ -36,6 +44,7 @@ def upload_csv(
     filename: str,
 ) -> str:
     """Upload a cost CSV and return its blob path."""
+    _ensure_container()
     blob_path = _csv_path(customer_id, month, year, service_type, filename)
     client = _get_blob(blob_path)
     client.upload_blob(
@@ -54,6 +63,7 @@ def upload_report(
     filename: str,
 ) -> str:
     """Upload a generated report and return its blob path."""
+    _ensure_container()
     blob_path = _report_path(customer_id, month, year, filename)
     client = _get_blob(blob_path)
     content_type = "application/pdf" if filename.endswith(".pdf") else "text/html"
@@ -71,6 +81,7 @@ def upload_template(
     filename: str,
 ) -> str:
     """Upload a report template and return its blob path."""
+    _ensure_container()
     blob_path = _template_path(customer_id, filename)
     client = _get_blob(blob_path)
     client.upload_blob(

@@ -18,7 +18,14 @@ def _json(body: dict, status: int = 200) -> func.HttpResponse:
 
 def main(req: func.HttpRequest) -> func.HttpResponse:
     logging.info('upload_csv triggered')
+    try:
+        return _handle(req)
+    except Exception as exc:
+        logging.exception('upload_csv unhandled error')
+        return _json({'error': str(exc)}, 500)
 
+
+def _handle(req: func.HttpRequest) -> func.HttpResponse:
     # ── Form fields (multipart) or query params ────────────────────────────────
     def field(name: str) -> str:
         return (req.params.get(name) or req.form.get(name, '')).strip()
