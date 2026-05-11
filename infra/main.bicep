@@ -110,6 +110,16 @@ resource functionApp 'Microsoft.Web/sites@2023-01-01' = {
   }
 }
 
+resource functionAppAuthSettings 'Microsoft.Web/sites/config@2023-01-01' = {
+  parent: functionApp
+  name: 'authsettingsV2'
+  properties: {
+    platform: {
+      enabled: false
+    }
+  }
+}
+
 // Grant Function App identity read access to Key Vault secrets
 resource kvAccessPolicy 'Microsoft.KeyVault/vaults/accessPolicies@2023-07-01' = {
   name: '${keyVaultName}/add'
