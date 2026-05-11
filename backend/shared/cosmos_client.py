@@ -153,9 +153,10 @@ def list_trends(customer_id: str, year: Optional[int] = None, service_type: Opti
     if service_type is not None:
         filters.append("c.serviceType = @serviceType")
         params.append({"name": "@serviceType", "value": service_type})
-    query = f"SELECT * FROM c WHERE {' AND '.join(filters)} ORDER BY c.year DESC, c.month DESC"
+    query = f"SELECT * FROM c WHERE {' AND '.join(filters)}"
     items = container.query_items(query=query, parameters=params, partition_key=customer_id)
-    return [TrendData.from_dict(i) for i in items]
+    results = [TrendData.from_dict(i) for i in items]
+    return sorted(results, key=lambda t: (t.year, t.month), reverse=True)
 
 
 def upsert_trend(trend: TrendData) -> TrendData:
@@ -188,9 +189,10 @@ def list_reports(customer_id: str, year: Optional[int] = None) -> list[Report]:
     if year is not None:
         filters.append("c.year = @year")
         params.append({"name": "@year", "value": year})
-    query = f"SELECT * FROM c WHERE {' AND '.join(filters)} ORDER BY c.year DESC, c.month DESC"
+    query = f"SELECT * FROM c WHERE {' AND '.join(filters)}"
     items = container.query_items(query=query, parameters=params, partition_key=customer_id)
-    return [Report.from_dict(i) for i in items]
+    results = [Report.from_dict(i) for i in items]
+    return sorted(results, key=lambda r: (r.year, r.month), reverse=True)
 
 
 def update_report(report: Report) -> Report:
