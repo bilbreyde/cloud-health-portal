@@ -1,5 +1,5 @@
 import os
-from typing import Any, Optional
+from typing import Optional
 
 from azure.cosmos import CosmosClient, PartitionKey, exceptions
 
