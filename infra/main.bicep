@@ -35,6 +35,20 @@ resource keyVault 'Microsoft.KeyVault/vaults@2023-07-01' existing = {
   name: keyVaultName
 }
 
+// ── Application Insights ─────────────────────────────────────────────────────
+
+resource appInsights 'Microsoft.Insights/components@2020-02-02' = {
+  name: 'appi-cloud-health'
+  location: location
+  kind: 'web'
+  properties: {
+    Application_Type: 'web'
+    RetentionInDays: 30
+    publicNetworkAccessForIngestion: 'Enabled'
+    publicNetworkAccessForQuery: 'Enabled'
+  }
+}
+
 // ── Azure Functions (Python, consumption plan) ───────────────────────────────
 
 resource appServicePlan 'Microsoft.Web/serverfarms@2023-01-01' = {
@@ -97,6 +111,14 @@ resource functionApp 'Microsoft.Web/sites@2023-01-01' = {
         {
           name: 'WEBSITE_RUN_FROM_PACKAGE'
           value: '1'
+        }
+        {
+          name: 'APPINSIGHTS_INSTRUMENTATIONKEY'
+          value: appInsights.properties.InstrumentationKey
+        }
+        {
+          name: 'APPLICATIONINSIGHTS_CONNECTION_STRING'
+          value: appInsights.properties.ConnectionString
         }
       ]
       cors: {
@@ -173,3 +195,6 @@ output keyVaultUri string = keyVault.properties.vaultUri
 
 output aiEndpointOut string = aiEndpoint
 output aiDeploymentNameOut string = aiDeploymentName
+
+output appInsightsName string = appInsights.name
+output appInsightsConnectionString string = appInsights.properties.ConnectionString
