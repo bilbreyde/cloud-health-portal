@@ -10,11 +10,16 @@ from shared import cosmos_client
 from shared.models import Customer
 
 
-def _json(body: dict, status: int = 200) -> func.HttpResponse:
+def _json(body, status: int = 200) -> func.HttpResponse:
     return func.HttpResponse(json.dumps(body), status_code=status, mimetype='application/json')
 
 
-def _handle_get() -> func.HttpResponse:
+def _handle_get(customer_id: str) -> func.HttpResponse:
+    if customer_id:
+        customer = cosmos_client.get_customer(customer_id)
+        if customer is None:
+            return _json({'error': f'Customer {customer_id!r} not found'}, 404)
+        return _json(customer.to_dict())
     customers = cosmos_client.list_customers()
     return _json([c.to_dict() for c in customers])
 
@@ -46,8 +51,22 @@ def _handle_post(req: func.HttpRequest) -> func.HttpResponse:
     return _json(customer.to_dict(), 201)
 
 
+def _handle_delete(customer_id: str) -> func.HttpResponse:
+    if not customer_id:
+        return _json({'error': 'customerId is required'}, 400)
+    cosmos_client.delete_customer(customer_id)
+    return func.HttpResponse(status_code=204)
+
+
 def main(req: func.HttpRequest) -> func.HttpResponse:
-    logging.info('customers triggered: %s', req.method)
-    if req.method == 'POST':
-        return _handle_post(req)
-    return _handle_get()
+    logging.info('customers triggered: %s %s', req.method, req.url)
+    customer_id = (req.route_params.get('customerId') or '').strip()
+    try:
+        if req.method == 'DELETE':
+            return _handle_delete(customer_id)
+        if req.method == 'POST':
+            return _handle_post(req)
+        return _handle_get(customer_id)
+    except Exception as exc:
+        logging.exception('customers unhandled error')
+        return _json({'error': str(exc)}, 500)

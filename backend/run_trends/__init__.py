@@ -24,7 +24,14 @@ def _int_param(req: func.HttpRequest, name: str, default: int) -> int:
 
 def main(req: func.HttpRequest) -> func.HttpResponse:
     logging.info('run_trends triggered')
+    try:
+        return _handle(req)
+    except Exception as exc:
+        logging.exception('run_trends unhandled error')
+        return _json({'error': str(exc)}, 500)
 
+
+def _handle(req: func.HttpRequest) -> func.HttpResponse:
     customer_id = req.route_params.get('customerId', '').strip()
     if not customer_id:
         return _json({'error': 'customerId route parameter is required'}, 400)

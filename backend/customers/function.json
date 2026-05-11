@@ -6,8 +6,8 @@
       "type": "httpTrigger",
       "direction": "in",
       "name": "req",
-      "methods": ["get", "post"],
-      "route": "customers"
+      "methods": ["get", "post", "delete"],
+      "route": "customers/{customerId?}"
     },
     {
       "type": "http",
