@@ -6,8 +6,8 @@
       "type": "httpTrigger",
       "direction": "in",
       "name": "req",
-      "methods": ["get", "post"],
-      "route": "trends"
+      "methods": ["get"],
+      "route": "trends/{customerId}"
     },
     {
       "type": "http",
