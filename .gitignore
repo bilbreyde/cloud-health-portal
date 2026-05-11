@@ -1,0 +1,68 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+.env
+.venv
+venv/
+env/
+pip-wheel-metadata/
+*.pyo
+
+# Azure Functions
+local.settings.json
+.python_packages/
+bin/
+obj/
+
+# Node / Vite / React
+node_modules/
+dist/
+dist-ssr/
+*.local
+.npm
+.eslintcache
+
+# Environment files
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# IDE
+.vscode/
+.idea/
+*.suo
+*.user
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Azure
+*.publishsettings
+.azure/
+
+# Infra
+*.tfstate
+*.tfstate.backup
+.terraform/
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Test artifacts
+.pytest_cache/
+.coverage
+htmlcov/
+coverage.xml
