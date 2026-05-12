@@ -15,6 +15,14 @@ export function fetchCustomers(): Promise<Customer[]> {
   return request<Customer[]>(`${BASE}/customers`)
 }
 
+export function createCustomer(body: { name: string; slug: string }): Promise<Customer> {
+  return request<Customer>(`${BASE}/customers`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+}
+
 export function fetchTrends(
   customerId: string,
   params: { startMonth: number; startYear: number; endMonth: number; endYear: number },

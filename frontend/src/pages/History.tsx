@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { fetchReports, importReport } from '../api'
-import CustomerSelector from '../components/CustomerSelector'
+import { useCustomer } from '../context/CustomerContext'
 import type { ExtractedReportData, Report } from '../types'
 
 const MONTH_NAMES = ['January','February','March','April','May','June',
@@ -71,7 +71,8 @@ interface ImportForm {
 
 export default function History() {
   const today = new Date()
-  const [customerId, setCustomerId] = useState('')
+  const { selectedCustomer } = useCustomer()
+  const customerId = selectedCustomer?.id ?? ''
   const [reports, setReports]       = useState<Report[]>([])
   const [loading, setLoading]       = useState(false)
   const [error, setError]           = useState('')
@@ -98,7 +99,7 @@ export default function History() {
       .catch(e => { setError(String(e)); setLoading(false) })
   }
 
-  useEffect(() => { loadReports(customerId) }, [customerId])
+  useEffect(() => { setExpandedId(null); loadReports(customerId) }, [customerId])
 
   async function handleImport() {
     const file = fileInputRef.current?.files?.[0]
@@ -146,7 +147,6 @@ export default function History() {
 
       <div className="card">
         <div className="controls">
-          <CustomerSelector value={customerId} onChange={id => { setCustomerId(id); setExpandedId(null) }} />
           {customerId && (
             <button
               className="btn btn-secondary"

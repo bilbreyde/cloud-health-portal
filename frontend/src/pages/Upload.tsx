@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { fetchTrends, uploadCsv } from '../api'
-import CustomerSelector from '../components/CustomerSelector'
+import { useCustomer } from '../context/CustomerContext'
 import type { UploadResult } from '../types'
 
 const MONTH_ABBR = ['January','February','March','April','May','June',
@@ -37,7 +37,8 @@ function now() { const d = new Date(); return { month: d.getMonth() + 1, year: d
 
 export default function Upload() {
   const today = now()
-  const [customerId, setCustomerId] = useState('')
+  const { selectedCustomer } = useCustomer()
+  const customerId = selectedCustomer?.id ?? ''
   const [month, setMonth] = useState(today.month)
   const [year, setYear] = useState(2026)
   const [snapshotDate, setSnapshotDate] = useState(todayIso())
@@ -148,7 +149,6 @@ export default function Upload() {
 
       <div className="card">
         <div className="controls">
-          <CustomerSelector value={customerId} onChange={setCustomerId} />
           <div className="field">
             <label>Month</label>
             <select value={month} onChange={e => { setMonth(+e.target.value); setEntries([]) }}>

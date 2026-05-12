@@ -6,7 +6,7 @@ import {
   importExceptions,
   putException,
 } from '../api'
-import CustomerSelector from '../components/CustomerSelector'
+import { useCustomer } from '../context/CustomerContext'
 import type { ExceptionRecord, ExceptionSummary } from '../types'
 
 function fmtMoney(n: number): string {
@@ -58,7 +58,8 @@ interface EditState {
 }
 
 export default function Exceptions() {
-  const [customerId, setCustomerId] = useState('')
+  const { selectedCustomer } = useCustomer()
+  const customerId = selectedCustomer?.id ?? ''
   const [exceptions, setExceptions] = useState<ExceptionRecord[]>([])
   const [summary, setSummary] = useState<ExceptionSummary | null>(null)
   const [loading, setLoading] = useState(false)
@@ -85,7 +86,12 @@ export default function Exceptions() {
       .finally(() => setLoading(false))
   }, [])
 
-  useEffect(() => { load(customerId) }, [customerId, load])
+  useEffect(() => {
+    setFilterCategory('')
+    setFilterLifecycle('')
+    setFilterState('')
+    load(customerId)
+  }, [customerId, load])
 
   const categories = [...new Set(exceptions.map(e => e.exceptionCategory).filter(Boolean))].sort()
   const lifecycles = [...new Set(exceptions.map(e => e.lifecycle).filter(Boolean))].sort()
@@ -154,7 +160,6 @@ export default function Exceptions() {
 
       <div className="card">
         <div className="controls">
-          <CustomerSelector value={customerId} onChange={id => { setCustomerId(id); setFilterCategory(''); setFilterLifecycle(''); setFilterState('') }} />
           {customerId && (
             <>
               <input

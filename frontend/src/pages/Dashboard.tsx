@@ -5,7 +5,7 @@ import {
   ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis,
 } from 'recharts'
 import { fetchDashboardNarrative, fetchTrends, patchCommitment } from '../api'
-import CustomerSelector from '../components/CustomerSelector'
+import { useCustomer } from '../context/CustomerContext'
 import type { DashboardNarrativeResponse, DataSnapshot, ServiceRow, TrendsResponse } from '../types'
 
 const MONTH_ABBR = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
@@ -145,7 +145,8 @@ function ExceptionDeltaWidget({ snapshot }: { snapshot: DataSnapshot }) {
 
 export default function Dashboard() {
   const today = now()
-  const [customerId, setCustomerId] = useState('')
+  const { selectedCustomer } = useCustomer()
+  const customerId = selectedCustomer?.id ?? ''
   const [startMonth, setStartMonth] = useState(1)
   const [startYear,  setStartYear]  = useState(2026)
   const [endMonth,   setEndMonth]   = useState(today.month)
@@ -158,6 +159,11 @@ export default function Dashboard() {
   const [narrLoading, setNarrLoading] = useState(false)
   const [narrError,   setNarrError]   = useState('')
   const [joelExpanded, setJoelExpanded] = useState(false)
+
+  useEffect(() => {
+    setData(null)
+    setError('')
+  }, [customerId])
 
   useEffect(() => {
     if (!customerId) { setNarr(null); return }
@@ -249,7 +255,6 @@ export default function Dashboard() {
       {/* ── CONTROLS ─────────────────────────────────────────────────────── */}
       <div className="card">
         <div className="controls">
-          <CustomerSelector value={customerId} onChange={id => { setCustomerId(id); setData(null) }} />
           <div className="field">
             <label>Start</label>
             <div style={{ display: 'flex', gap: 6 }}>
@@ -282,9 +287,9 @@ export default function Dashboard() {
       {/* ── EMPTY STATE ──────────────────────────────────────────────────── */}
       {!customerId && (
         <div className="card" style={{ textAlign: 'center', padding: '48px 20px' }}>
-          <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 8 }}>Select a customer to get started</div>
+          <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 8 }}>No customer selected</div>
           <div style={{ fontSize: 13, color: 'var(--muted)' }}>
-            AI insights load automatically. Use the date range above to load chart data.
+            Choose a customer from the selector in the top navigation bar.
           </div>
         </div>
       )}

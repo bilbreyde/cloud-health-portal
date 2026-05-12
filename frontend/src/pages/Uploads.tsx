@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { fetchUploads, patchUpload } from '../api'
-import CustomerSelector from '../components/CustomerSelector'
+import { useCustomer } from '../context/CustomerContext'
 import type { UploadRecord } from '../types'
 
 const MONTH_ABBR = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']
@@ -24,7 +24,8 @@ interface RowState {
 }
 
 export default function Uploads() {
-  const [customerId, setCustomerId] = useState('')
+  const { selectedCustomer } = useCustomer()
+  const customerId = selectedCustomer?.id ?? ''
   const [uploads, setUploads] = useState<UploadRecord[]>([])
   const [loading, setLoading] = useState(false)
   const [fetchError, setFetchError] = useState('')
@@ -75,12 +76,6 @@ export default function Uploads() {
   return (
     <main className="page">
       <h1 className="page-title">Manage Uploads</h1>
-
-      <div className="card">
-        <div className="controls">
-          <CustomerSelector value={customerId} onChange={id => { setCustomerId(id) }} />
-        </div>
-      </div>
 
       {loading && (
         <div className="card" style={{ textAlign: 'center', color: 'var(--muted)', padding: 32 }}>

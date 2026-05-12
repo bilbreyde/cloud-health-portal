@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { buildReport } from '../api'
-import CustomerSelector from '../components/CustomerSelector'
+import { useCustomer } from '../context/CustomerContext'
 import type { NarrativeDraft, ReportResponse } from '../types'
 
 const MONTH_NAMES = ['January','February','March','April','May','June',
@@ -40,7 +40,8 @@ function now() { const d = new Date(); return { month: d.getMonth() + 1, year: d
 
 export default function ReportBuilder() {
   const today = now()
-  const [customerId, setCustomerId]   = useState('')
+  const { selectedCustomer } = useCustomer()
+  const customerId = selectedCustomer?.id ?? ''
   const [month, setMonth]             = useState(today.month)
   const [year, setYear]               = useState(2026)
   const [joelNotes, setJoelNotes]     = useState('')
@@ -84,7 +85,6 @@ export default function ReportBuilder() {
 
       <div className="card">
         <div className="controls">
-          <CustomerSelector value={customerId} onChange={setCustomerId} />
           <div className="field">
             <label>Month</label>
             <select value={month} onChange={e => setMonth(+e.target.value)}>
