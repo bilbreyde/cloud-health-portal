@@ -156,6 +156,34 @@ export interface ExceptionSummary {
   byLifecycle: { lifecycle: string; count: number; monthlyCost: number }[]
 }
 
+export interface DashboardNarrative {
+  situation: string
+  trend: string
+  exceptions: string
+  recommendation: string
+}
+
+export interface DataSnapshot {
+  signal: number
+  exceptionFloor: number
+  netAddressable: number
+  realizedSavings: number
+  remaining: number
+  reportingMonth: number
+  reportingYear: number
+  prevReportLabel: string
+  joelNotes: string
+}
+
+export interface DashboardNarrativeResponse {
+  narrative: DashboardNarrative
+  generatedAt: string
+  dataSnapshot: DataSnapshot
+  prevNextSteps: string[]
+  commitments: Record<string, boolean>
+  cached: boolean
+}
+
 export interface Report {
   id: string
   customerId: string

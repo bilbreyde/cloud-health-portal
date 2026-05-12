@@ -1,4 +1,4 @@
-import type { Customer, ExceptionRecord, ExceptionSummary, ImportReportResponse, Report, ReportResponse, TrendsResponse, UploadRecord, UploadResult } from './types'
+import type { Customer, DashboardNarrativeResponse, ExceptionRecord, ExceptionSummary, ImportReportResponse, Report, ReportResponse, TrendsResponse, UploadRecord, UploadResult } from './types'
 
 const BASE = (import.meta.env.VITE_API_URL ?? '') + '/api'
 
@@ -42,6 +42,23 @@ export function buildReport(body: {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
+  })
+}
+
+export function fetchDashboardNarrative(customerId: string, force = false): Promise<DashboardNarrativeResponse> {
+  const qs = force ? '?force=true' : ''
+  return request<DashboardNarrativeResponse>(`${BASE}/dashboard/${customerId}/narrative${qs}`)
+}
+
+export function patchCommitment(
+  customerId: string,
+  commitmentKey: string,
+  checked: boolean,
+): Promise<{ success: boolean; commitments: Record<string, boolean> }> {
+  return request(`${BASE}/dashboard/${customerId}/narrative`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ commitmentKey, checked }),
   })
 }
 

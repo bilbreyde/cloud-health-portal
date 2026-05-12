@@ -18,4 +18,4 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         return _json({'error': 'customerId route parameter is required'}, 400)
 
     reports = cosmos_client.list_reports(customer_id)
-    return _json([r.to_dict() for r in reports])
+    return _json([r.to_dict() for r in reports if r.source != 'dashboard_narrative'])
