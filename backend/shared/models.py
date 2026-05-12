@@ -2,6 +2,43 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Optional
 
+# Ordered most-specific to least-specific; first match wins
+_PRODUCT_CATEGORY_MAP = [
+    ('fortinet', 'Network Security'),
+    ('palo alto', 'Network Security'),
+    ('checkpoint', 'Network Security'),
+    ('f5 big', 'Network Security'),
+    ('file gateway', 'Storage Gateway'),
+    ('storage gateway', 'Storage Gateway'),
+    ('tape gateway', 'Storage Gateway'),
+    ('sql server', 'Database'),
+    ('oracle', 'Database'),
+    ('aurora', 'Database'),
+    ('postgres', 'Database'),
+    ('mysql', 'Database'),
+    ('sap', 'ERP'),
+    ('sharepoint', 'Enterprise Apps'),
+    ('exchange', 'Enterprise Apps'),
+    ('dynamics', 'Enterprise Apps'),
+    ('tableau', 'Analytics'),
+    ('splunk', 'SIEM'),
+    ('gitlab', 'DevOps'),
+    ('jenkins', 'DevOps'),
+    ('windows', 'Windows Server'),
+    ('linux', 'Linux Server'),
+    ('ubuntu', 'Linux Server'),
+    ('rhel', 'Linux Server'),
+    ('centos', 'Linux Server'),
+]
+
+
+def derive_exception_category(product: str) -> str:
+    lower = (product or '').lower()
+    for keyword, category in _PRODUCT_CATEGORY_MAP:
+        if keyword in lower:
+            return category
+    return 'General Compute'
+
 
 @dataclass
 class Customer:
@@ -170,6 +207,73 @@ class Report:
             generatedAt=datetime.fromisoformat(d["generatedAt"]),
             joelNotes=d.get("joelNotes"),
             narrativeDraft=d.get("narrativeDraft"),
+        )
+
+
+@dataclass
+class ExceptionRecord:
+    id: str
+    customerId: str
+    instanceId: str
+    instanceName: str
+    accountName: str
+    appOwner: str
+    product: str
+    lifecycle: str
+    notes: str
+    pricePerHour: float
+    projectedCostPerMonth: float
+    state: str
+    apiName: str
+    serverRole: str
+    portfolioName: str
+    exceptionCategory: str
+    createdAt: datetime
+    updatedAt: datetime
+
+    def to_dict(self) -> dict:
+        return {
+            'id': self.id,
+            'customerId': self.customerId,
+            'instanceId': self.instanceId,
+            'instanceName': self.instanceName,
+            'accountName': self.accountName,
+            'appOwner': self.appOwner,
+            'product': self.product,
+            'lifecycle': self.lifecycle,
+            'notes': self.notes,
+            'pricePerHour': self.pricePerHour,
+            'projectedCostPerMonth': self.projectedCostPerMonth,
+            'state': self.state,
+            'apiName': self.apiName,
+            'serverRole': self.serverRole,
+            'portfolioName': self.portfolioName,
+            'exceptionCategory': self.exceptionCategory,
+            'createdAt': self.createdAt.isoformat(),
+            'updatedAt': self.updatedAt.isoformat(),
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> 'ExceptionRecord':
+        return cls(
+            id=d['id'],
+            customerId=d['customerId'],
+            instanceId=d.get('instanceId', ''),
+            instanceName=d.get('instanceName', ''),
+            accountName=d.get('accountName', ''),
+            appOwner=d.get('appOwner', ''),
+            product=d.get('product', ''),
+            lifecycle=d.get('lifecycle', ''),
+            notes=d.get('notes', ''),
+            pricePerHour=float(d.get('pricePerHour', 0.0)),
+            projectedCostPerMonth=float(d.get('projectedCostPerMonth', 0.0)),
+            state=d.get('state', ''),
+            apiName=d.get('apiName', ''),
+            serverRole=d.get('serverRole', ''),
+            portfolioName=d.get('portfolioName', ''),
+            exceptionCategory=d.get('exceptionCategory', ''),
+            createdAt=datetime.fromisoformat(d['createdAt']),
+            updatedAt=datetime.fromisoformat(d['updatedAt']),
         )
 
 

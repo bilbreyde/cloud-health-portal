@@ -3,7 +3,7 @@ from typing import Optional
 
 from azure.cosmos import CosmosClient, PartitionKey, exceptions
 
-from .models import Customer, Report, Template, TrendData, Upload
+from .models import Customer, ExceptionRecord, Report, Template, TrendData, Upload
 
 _DB_NAME = "cloud-health-portal"
 _CONTAINERS = {
@@ -12,6 +12,7 @@ _CONTAINERS = {
     "trend_data": "/customerId",
     "reports": "/customerId",
     "templates": "/customerId",
+    "exceptions": "/customerId",
 }
 
 # customers container is special — the customer IS the partition, so we store
@@ -244,3 +245,61 @@ def upsert_template(template: Template) -> Template:
 def delete_template(template_id: str, customer_id: str) -> None:
     container = _get_container("templates")
     container.delete_item(item=template_id, partition_key=customer_id)
+
+
+# ── exceptions ─────────────────────────────────────────────────────────────────
+
+def upsert_exception(exc: ExceptionRecord) -> ExceptionRecord:
+    container = _get_container("exceptions")
+    container.upsert_item(exc.to_dict())
+    return exc
+
+
+def get_exception(exception_id: str, customer_id: str) -> Optional[ExceptionRecord]:
+    container = _get_container("exceptions")
+    try:
+        doc = container.read_item(item=exception_id, partition_key=customer_id)
+        return ExceptionRecord.from_dict(doc)
+    except exceptions.CosmosResourceNotFoundError:
+        return None
+
+
+def list_exceptions(customer_id: str) -> list[ExceptionRecord]:
+    container = _get_container("exceptions")
+    items = container.query_items(
+        query="SELECT * FROM c WHERE c.customerId = @customerId",
+        parameters=[{"name": "@customerId", "value": customer_id}],
+        partition_key=customer_id,
+    )
+    results = [ExceptionRecord.from_dict(i) for i in items]
+    return sorted(results, key=lambda e: (e.exceptionCategory, e.instanceName))
+
+
+def delete_exception(exception_id: str, customer_id: str) -> None:
+    container = _get_container("exceptions")
+    container.delete_item(item=exception_id, partition_key=customer_id)
+
+
+def exceptions_summary(customer_id: str) -> dict:
+    exc_list = list_exceptions(customer_id)
+    total_cost = round(sum(e.projectedCostPerMonth for e in exc_list), 2)
+
+    by_cat: dict[str, dict] = {}
+    by_lc: dict[str, dict] = {}
+    for e in exc_list:
+        cat = e.exceptionCategory or 'Uncategorized'
+        by_cat.setdefault(cat, {'category': cat, 'count': 0, 'monthlyCost': 0.0})
+        by_cat[cat]['count'] += 1
+        by_cat[cat]['monthlyCost'] = round(by_cat[cat]['monthlyCost'] + e.projectedCostPerMonth, 2)
+
+        lc = e.lifecycle or 'Unknown'
+        by_lc.setdefault(lc, {'lifecycle': lc, 'count': 0, 'monthlyCost': 0.0})
+        by_lc[lc]['count'] += 1
+        by_lc[lc]['monthlyCost'] = round(by_lc[lc]['monthlyCost'] + e.projectedCostPerMonth, 2)
+
+    return {
+        'totalCount': len(exc_list),
+        'totalMonthlyCost': total_cost,
+        'byCategory': sorted(by_cat.values(), key=lambda x: -x['monthlyCost']),
+        'byLifecycle': sorted(by_lc.values(), key=lambda x: -x['monthlyCost']),
+    }

@@ -24,7 +24,8 @@ def _build_user_prompt(customer_name: str, month: int, year: int,
                        curr_data: dict, prev_data: dict,
                        classifications: dict,
                        top_movers_up: list, top_movers_down: list,
-                       joel_notes: str) -> str:
+                       joel_notes: str,
+                       exception_summary: dict | None = None) -> str:
     month_label = datetime(year, month, 1).strftime('%B %Y')
     lines = [
         f"Customer: {customer_name}",
@@ -45,6 +46,27 @@ def _build_user_prompt(customer_name: str, month: int, year: int,
         lines.append("\nServices with Decreased Spend / Savings (Top Movers Down):")
         for m in top_movers_down[:5]:
             lines.append(f"  {m['serviceType']}: ${m['momDelta']:,.2f} MoM")
+
+    if exception_summary and exception_summary.get('totalCount', 0) > 0:
+        lines.append(
+            f"\nException Floor (business-critical servers excluded from optimization):"
+        )
+        lines.append(
+            f"  {exception_summary['totalCount']} servers, "
+            f"${exception_summary['totalMonthlyCost']:,.2f}/month total"
+        )
+        top_cats = exception_summary.get('byCategory', [])[:3]
+        if top_cats:
+            lines.append("  Top categories:")
+            for cat in top_cats:
+                lines.append(
+                    f"    {cat['category']}: {cat['count']} servers, ${cat['monthlyCost']:,.2f}/month"
+                )
+        lines.append(
+            "  NOTE: The exception floor represents costs that cannot be optimized due to "
+            "business-critical requirements. Reference this in the report when discussing "
+            "the total addressable optimization opportunity."
+        )
 
     if joel_notes:
         lines.append(f"\nEngagement Manager Notes to incorporate:\n{joel_notes}")
@@ -129,6 +151,13 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
     top_movers_up.sort(key=lambda x: -x['momDelta'])
     top_movers_down.sort(key=lambda x: x['momDelta'])
 
+    # ── Exception floor ────────────────────────────────────────────────────────
+    exception_summary: dict | None = None
+    try:
+        exception_summary = cosmos_client.exceptions_summary(customer_id)
+    except Exception as exc:
+        logging.warning('Could not fetch exception summary: %s', exc)
+
     # ── GPT-5.1 narrative generation ───────────────────────────────────────────
     ai_client = AzureOpenAI(
         azure_endpoint=os.environ['AI_ENDPOINT'],
@@ -143,6 +172,7 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
     user_prompt = _build_user_prompt(
         customer.name, month, year, curr_data, prev_data,
         classifications, top_movers_up, top_movers_down, joel_notes,
+        exception_summary=exception_summary,
     )
 
     narrative = {
@@ -187,4 +217,6 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         'topMoversUp': top_movers_up[:5],
         'topMoversDown': top_movers_down[:5],
         'serviceSummary': service_summary,
+        'totalExceptionCost': exception_summary['totalMonthlyCost'] if exception_summary else 0.0,
+        'topExceptionCategories': (exception_summary.get('byCategory', [])[:5] if exception_summary else []),
     })

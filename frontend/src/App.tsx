@@ -1,5 +1,6 @@
 import { BrowserRouter, NavLink, Route, Routes } from 'react-router-dom'
 import Dashboard from './pages/Dashboard'
+import Exceptions from './pages/Exceptions'
 import History from './pages/History'
 import ReportBuilder from './pages/ReportBuilder'
 import Upload from './pages/Upload'
@@ -26,6 +27,9 @@ function NavBar() {
       <NavLink to="/uploads" className={({ isActive }) => 'nav-link' + (isActive ? ' active' : '')}>
         Manage Uploads
       </NavLink>
+      <NavLink to="/exceptions" className={({ isActive }) => 'nav-link' + (isActive ? ' active' : '')}>
+        Exceptions
+      </NavLink>
     </nav>
   )
 }
@@ -40,6 +44,7 @@ export default function App() {
         <Route path="/report" element={<ReportBuilder />} />
         <Route path="/history" element={<History />} />
         <Route path="/uploads" element={<Uploads />} />
+        <Route path="/exceptions" element={<Exceptions />} />
       </Routes>
     </BrowserRouter>
   )

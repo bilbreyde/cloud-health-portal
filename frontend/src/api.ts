@@ -1,4 +1,4 @@
-import type { Customer, Report, ReportResponse, TrendsResponse, UploadRecord, UploadResult } from './types'
+import type { Customer, ExceptionRecord, ExceptionSummary, Report, ReportResponse, TrendsResponse, UploadRecord, UploadResult } from './types'
 
 const BASE = (import.meta.env.VITE_API_URL ?? '') + '/api'
 
@@ -62,4 +62,32 @@ export function patchUpload(
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   })
+}
+
+export function fetchExceptions(customerId: string): Promise<ExceptionRecord[]> {
+  return request<ExceptionRecord[]>(`${BASE}/exceptions/${customerId}`)
+}
+
+export function fetchExceptionSummary(customerId: string): Promise<ExceptionSummary> {
+  return request<ExceptionSummary>(`${BASE}/exceptions/${customerId}/summary`)
+}
+
+export function importExceptions(customerId: string, formData: FormData): Promise<{ imported: number; errors: unknown[] }> {
+  return request(`${BASE}/exceptions/${customerId}/import`, { method: 'POST', body: formData })
+}
+
+export function putException(
+  customerId: string,
+  exceptionId: string,
+  body: { notes?: string; exceptionCategory?: string },
+): Promise<ExceptionRecord> {
+  return request<ExceptionRecord>(`${BASE}/exceptions/${customerId}/${exceptionId}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+}
+
+export function deleteException(customerId: string, exceptionId: string): Promise<void> {
+  return request<void>(`${BASE}/exceptions/${customerId}/${exceptionId}`, { method: 'DELETE' })
 }

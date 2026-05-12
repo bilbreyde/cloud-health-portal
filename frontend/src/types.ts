@@ -107,6 +107,34 @@ export interface UploadRecord {
   isRelabeled: boolean
 }
 
+export interface ExceptionRecord {
+  id: string
+  customerId: string
+  instanceId: string
+  instanceName: string
+  accountName: string
+  appOwner: string
+  product: string
+  lifecycle: string
+  notes: string
+  pricePerHour: number
+  projectedCostPerMonth: number
+  state: string
+  apiName: string
+  serverRole: string
+  portfolioName: string
+  exceptionCategory: string
+  createdAt: string
+  updatedAt: string
+}
+
+export interface ExceptionSummary {
+  totalCount: number
+  totalMonthlyCost: number
+  byCategory: { category: string; count: number; monthlyCost: number }[]
+  byLifecycle: { lifecycle: string; count: number; monthlyCost: number }[]
+}
+
 export interface Report {
   id: string
   customerId: string
