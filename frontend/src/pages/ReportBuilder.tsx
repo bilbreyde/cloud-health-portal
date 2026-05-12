@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { buildReport } from '../api'
+import { buildReport, exportReport } from '../api'
 import { useCustomer } from '../context/CustomerContext'
 import type { NarrativeDraft, ReportResponse } from '../types'
 
@@ -48,6 +48,8 @@ export default function ReportBuilder() {
   const [report, setReport]           = useState<ReportResponse | null>(null)
   const [draft, setDraft]             = useState<NarrativeDraft | null>(null)
   const [generating, setGenerating]   = useState(false)
+  const [exporting, setExporting]     = useState(false)
+  const [exportMsg, setExportMsg]     = useState('')
   const [error, setError]             = useState('')
 
   async function generate() {
@@ -62,6 +64,28 @@ export default function ReportBuilder() {
       setError(e instanceof Error ? e.message : String(e))
     } finally {
       setGenerating(false)
+    }
+  }
+
+  async function handleExport() {
+    if (!customerId || !report) return
+    setExporting(true)
+    setExportMsg('')
+    try {
+      const blob = await exportReport({ customerId, month, year })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `${selectedCustomer?.slug ?? customerId}_${year}_${String(month).padStart(2, '0')}_report.docx`
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+      URL.revokeObjectURL(url)
+      setExportMsg('Downloaded successfully')
+    } catch (e) {
+      setExportMsg(e instanceof Error ? e.message : String(e))
+    } finally {
+      setExporting(false)
     }
   }
 
@@ -138,8 +162,24 @@ export default function ReportBuilder() {
                 />
               </div>
             ))}
-            <div style={{ marginTop: 8, display: 'flex', gap: 10 }}>
-              <button className="btn btn-ghost" disabled title="Coming soon">Export .docx</button>
+            <div style={{ marginTop: 8, display: 'flex', alignItems: 'center', gap: 10 }}>
+              <button
+                className="btn btn-ghost"
+                onClick={handleExport}
+                disabled={!report || exporting}
+              >
+                {exporting
+                  ? <><span className="spinner" style={{ borderTopColor: 'var(--blue)' }} /> Exporting…</>
+                  : 'Export .docx'}
+              </button>
+              {exportMsg && (
+                <span style={{
+                  fontSize: 12,
+                  color: exportMsg === 'Downloaded successfully' ? 'var(--green)' : 'var(--red)',
+                }}>
+                  {exportMsg}
+                </span>
+              )}
             </div>
           </div>
 

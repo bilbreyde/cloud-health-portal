@@ -70,6 +70,23 @@ export function patchCommitment(
   })
 }
 
+export async function exportReport(body: {
+  customerId: string
+  month: number
+  year: number
+}): Promise<Blob> {
+  const res = await fetch(`${BASE}/report/export`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  if (!res.ok) {
+    const text = await res.text()
+    throw new Error(text || `HTTP ${res.status}`)
+  }
+  return res.blob()
+}
+
 export function fetchReports(customerId: string): Promise<Report[]> {
   return request<Report[]>(`${BASE}/reports/${customerId}`)
 }

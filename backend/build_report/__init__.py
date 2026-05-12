@@ -211,7 +211,10 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         all_trends = cosmos_client.list_trends(customer_id)
         curr_trends = [t for t in all_trends if t.year == year and t.month == month]
         if not curr_trends:
-            return _json({'error': f'No trend data found for {month}/{year}'}, 404)
+            return _json(
+                {'error': f'No trend data found for {month}/{year}. Please upload CSVs for this period first.'},
+                404,
+            )
 
         prev_month_n, prev_year = _prev_month(month, year)
         prev_trends = [t for t in all_trends if t.year == prev_year and t.month == prev_month_n]
