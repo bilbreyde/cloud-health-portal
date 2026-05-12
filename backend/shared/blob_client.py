@@ -75,6 +75,28 @@ def upload_report(
     return blob_path
 
 
+def upload_docx(
+    customer_id: str,
+    month: int,
+    year: int,
+    file_bytes: bytes,
+    filename: str,
+) -> str:
+    """Upload an imported .docx report and return its blob path."""
+    _ensure_container()
+    safe_name = f"imported_{filename}"
+    blob_path = _report_path(customer_id, month, year, safe_name)
+    client = _get_blob(blob_path)
+    client.upload_blob(
+        file_bytes,
+        overwrite=True,
+        content_settings=ContentSettings(
+            content_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        ),
+    )
+    return blob_path
+
+
 def upload_template(
     customer_id: str,
     file_bytes: bytes,

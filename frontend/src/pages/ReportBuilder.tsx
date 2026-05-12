@@ -14,6 +14,28 @@ const NARRATIVE_FIELDS: { key: keyof NarrativeDraft; label: string }[] = [
   { key: 'risks_and_next_steps',   label: 'Risks & Next Steps'     },
 ]
 
+function fmtMoney(n: number) {
+  return '$' + n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+}
+
+function FlowStat({ label, value, accent }: { label: string; value: string; accent?: string }) {
+  return (
+    <div style={{ textAlign: 'center', minWidth: 120 }}>
+      <div style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 4, textTransform: 'uppercase', letterSpacing: '.4px' }}>{label}</div>
+      <div style={{ fontSize: 18, fontWeight: 700, color: accent ?? 'var(--text)' }}>{value}</div>
+    </div>
+  )
+}
+
+function FlowArrow({ label, color }: { label: string; color: string }) {
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', color, fontSize: 11, fontWeight: 600 }}>
+      <span style={{ fontSize: 16 }}>→</span>
+      <span style={{ whiteSpace: 'nowrap' }}>{label}</span>
+    </div>
+  )
+}
+
 function now() { const d = new Date(); return { month: d.getMonth() + 1, year: d.getFullYear() } }
 
 export default function ReportBuilder() {
@@ -48,6 +70,13 @@ export default function ReportBuilder() {
 
   const dirClass = (d: string) => d === 'Up' ? 'up' : d === 'Down' ? 'down' : 'flat'
   const dirArrow = (d: string) => d === 'Up' ? '▲' : d === 'Down' ? '▼' : '—'
+
+  // Delta section derived values
+  const totalSignal     = report?.totalSignal ?? 0
+  const exceptionFloor  = report?.exceptionFloor ?? 0
+  const realizedSavings = report?.realizedSavings ?? 0
+  const netAddressable  = Math.max(0, totalSignal - exceptionFloor)
+  const remaining       = Math.max(0, netAddressable - realizedSavings)
 
   return (
     <main className="page">
@@ -103,7 +132,7 @@ export default function ReportBuilder() {
               <div key={key} className="narrative-section">
                 <div className="narrative-label">{label}</div>
                 <textarea
-                  value={draft[key]}
+                  value={draft[key] ?? ''}
                   onChange={e => updateDraft(key, e.target.value)}
                   style={{ width: '100%', minHeight: key === 'executive_summary' ? 180 : 140 }}
                 />
@@ -111,6 +140,41 @@ export default function ReportBuilder() {
             ))}
             <div style={{ marginTop: 8, display: 'flex', gap: 10 }}>
               <button className="btn btn-ghost" disabled title="Coming soon">Export .docx</button>
+            </div>
+          </div>
+
+          {/* Exception & Signal Delta section */}
+          <div className="card">
+            <div className="card-title">Exception & Signal Delta</div>
+
+            {/* Visual flow: Signal → Exception Floor → Net → Realized → Remaining */}
+            <div style={{
+              display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap',
+              padding: '16px 0', marginBottom: 16, borderBottom: '1px solid var(--border)',
+            }}>
+              <FlowStat label="CloudHealth Signal" value={fmtMoney(totalSignal)} accent="var(--text)" />
+              <FlowArrow label="− Exception Floor" color="var(--red)" />
+              <FlowStat label="Exception Floor" value={fmtMoney(exceptionFloor)} accent="var(--red)" />
+              <FlowArrow label="= Net Addressable" color="var(--muted)" />
+              <FlowStat label="Net Addressable" value={fmtMoney(netAddressable)} accent="var(--blue)" />
+              {realizedSavings > 0 && (
+                <>
+                  <FlowArrow label="− Realized" color="var(--green)" />
+                  <FlowStat label="Realized Savings" value={fmtMoney(realizedSavings)} accent="var(--green)" />
+                  <FlowArrow label="= Remaining" color="var(--muted)" />
+                  <FlowStat label="Remaining Opportunity" value={fmtMoney(remaining)} accent="var(--blue-dark)" />
+                </>
+              )}
+            </div>
+
+            <div className="narrative-section" style={{ margin: 0 }}>
+              <div className="narrative-label">Exception & Signal Delta Narrative</div>
+              <textarea
+                value={draft.exception_delta ?? ''}
+                onChange={e => updateDraft('exception_delta', e.target.value)}
+                style={{ width: '100%', minHeight: 160 }}
+                placeholder="Auto-generated when report is built…"
+              />
             </div>
           </div>
 

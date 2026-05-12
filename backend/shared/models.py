@@ -176,11 +176,13 @@ class Report:
     customerId: str
     month: int
     year: int
-    status: str            # draft | review | final
+    status: str            # draft | review | final | imported
     blobPath: str
     generatedAt: datetime
     joelNotes: Optional[str] = None
     narrativeDraft: Optional[str] = None
+    source: str = 'generated'   # generated | manual_import
+    extractedData: Optional[dict] = None
 
     def to_dict(self) -> dict:
         return {
@@ -193,6 +195,8 @@ class Report:
             "generatedAt": self.generatedAt.isoformat(),
             "joelNotes": self.joelNotes,
             "narrativeDraft": self.narrativeDraft,
+            "source": self.source,
+            "extractedData": self.extractedData,
         }
 
     @classmethod
@@ -207,6 +211,8 @@ class Report:
             generatedAt=datetime.fromisoformat(d["generatedAt"]),
             joelNotes=d.get("joelNotes"),
             narrativeDraft=d.get("narrativeDraft"),
+            source=d.get("source", "generated"),
+            extractedData=d.get("extractedData"),
         )
 
 

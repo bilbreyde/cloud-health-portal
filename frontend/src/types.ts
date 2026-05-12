@@ -74,6 +74,7 @@ export interface NarrativeDraft {
   optimization_narrative: string
   top_movers_analysis: string
   risks_and_next_steps: string
+  exception_delta?: string
 }
 
 export interface ReportResponse {
@@ -89,6 +90,26 @@ export interface ReportResponse {
     direction: string
     classification: string
   }>
+  totalExceptionCost: number
+  topExceptionCategories: { category: string; count: number; monthlyCost: number }[]
+  totalSignal: number
+  realizedSavings: number
+  exceptionFloor: number
+}
+
+export interface ExtractedReportData {
+  monthlySavings: Record<string, number>
+  topMoversUp: { serviceType: string; amount: number }[]
+  topMoversDown: { serviceType: string; amount: number }[]
+  realizedSavings: number
+  exceptionFloor: number
+  nextSteps: string[]
+}
+
+export interface ImportReportResponse {
+  success: boolean
+  reportId: string
+  extractedData: ExtractedReportData
 }
 
 export interface UploadRecord {
@@ -145,4 +166,6 @@ export interface Report {
   generatedAt: string
   joelNotes?: string
   narrativeDraft?: string
+  source?: string
+  extractedData?: ExtractedReportData
 }

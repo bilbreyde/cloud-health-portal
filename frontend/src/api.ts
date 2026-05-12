@@ -1,4 +1,4 @@
-import type { Customer, ExceptionRecord, ExceptionSummary, Report, ReportResponse, TrendsResponse, UploadRecord, UploadResult } from './types'
+import type { Customer, ExceptionRecord, ExceptionSummary, ImportReportResponse, Report, ReportResponse, TrendsResponse, UploadRecord, UploadResult } from './types'
 
 const BASE = (import.meta.env.VITE_API_URL ?? '') + '/api'
 
@@ -47,6 +47,13 @@ export function buildReport(body: {
 
 export function fetchReports(customerId: string): Promise<Report[]> {
   return request<Report[]>(`${BASE}/reports/${customerId}`)
+}
+
+export function importReport(customerId: string, formData: FormData): Promise<ImportReportResponse> {
+  return request<ImportReportResponse>(`${BASE}/reports/${customerId}/import`, {
+    method: 'POST',
+    body: formData,
+  })
 }
 
 export function fetchUploads(customerId: string): Promise<UploadRecord[]> {
