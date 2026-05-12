@@ -594,10 +594,10 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
     return func.HttpResponse(
         body=docx_bytes,
         status_code=200,
+        mimetype='application/vnd.openxmlformats-officedocument.wordprocessingml.document',
         headers={
-            'Content-Type': (
-                'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
-            ),
             'Content-Disposition': f'attachment; filename="{safe_name}"',
+            'Content-Type': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+            'Access-Control-Expose-Headers': 'Content-Disposition',
         },
     )

@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { buildReport, exportReport } from '../api'
+import { buildReport } from '../api'
 import { useCustomer } from '../context/CustomerContext'
 import type { NarrativeDraft, ReportResponse } from '../types'
 
@@ -68,11 +68,26 @@ export default function ReportBuilder() {
   }
 
   async function handleExport() {
-    if (!customerId || !report) return
+    if (!customerId) return
     setExporting(true)
     setExportMsg('')
+    const apiUrl = (import.meta.env.VITE_API_URL ?? '') + '/api/report/export'
+    console.log('[export] POST', apiUrl, { customerId, month, year })
     try {
-      const blob = await exportReport({ customerId, month, year })
+      const response = await fetch(apiUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ customerId, month, year }),
+      })
+      console.log('[export] status', response.status, 'content-type', response.headers.get('Content-Type'))
+      if (!response.ok) {
+        const text = await response.text()
+        console.error('[export] error body', text)
+        throw new Error(text || `HTTP ${response.status}`)
+      }
+      const blob = await response.blob()
+      console.log('[export] blob size', blob.size, 'type', blob.type)
+      if (blob.size === 0) throw new Error('Received empty file from server')
       const url = URL.createObjectURL(blob)
       const a = document.createElement('a')
       a.href = url
@@ -83,6 +98,7 @@ export default function ReportBuilder() {
       URL.revokeObjectURL(url)
       setExportMsg('Downloaded successfully')
     } catch (e) {
+      console.error('[export] caught', e)
       setExportMsg(e instanceof Error ? e.message : String(e))
     } finally {
       setExporting(false)
@@ -129,6 +145,33 @@ export default function ReportBuilder() {
       </div>
 
       <div className="card">
+        <div className="card-title">Export Report</div>
+        <p style={{ fontSize: 13, color: 'var(--muted)', margin: '0 0 12px' }}>
+          Export the most recently generated report for this customer and period as a formatted .docx document.
+          A report must have been generated at least once before exporting.
+        </p>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <button
+            className="btn btn-primary"
+            onClick={handleExport}
+            disabled={!customerId || exporting}
+          >
+            {exporting
+              ? <><span className="spinner" /> Exporting…</>
+              : 'Export .docx'}
+          </button>
+          {exportMsg && (
+            <span style={{
+              fontSize: 12,
+              color: exportMsg === 'Downloaded successfully' ? 'var(--green)' : 'var(--red)',
+            }}>
+              {exportMsg}
+            </span>
+          )}
+        </div>
+      </div>
+
+      <div className="card">
         <div className="card-title">Joel's Notes</div>
         <textarea
           value={joelNotes}
@@ -162,25 +205,6 @@ export default function ReportBuilder() {
                 />
               </div>
             ))}
-            <div style={{ marginTop: 8, display: 'flex', alignItems: 'center', gap: 10 }}>
-              <button
-                className="btn btn-ghost"
-                onClick={handleExport}
-                disabled={!report || exporting}
-              >
-                {exporting
-                  ? <><span className="spinner" style={{ borderTopColor: 'var(--blue)' }} /> Exporting…</>
-                  : 'Export .docx'}
-              </button>
-              {exportMsg && (
-                <span style={{
-                  fontSize: 12,
-                  color: exportMsg === 'Downloaded successfully' ? 'var(--green)' : 'var(--red)',
-                }}>
-                  {exportMsg}
-                </span>
-              )}
-            </div>
           </div>
 
           {/* Exception & Signal Delta section */}
