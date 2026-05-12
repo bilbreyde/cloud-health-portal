@@ -59,7 +59,7 @@ export default function ReportBuilder() {
       setReport(res)
       setDraft({ ...res.narrativeDraft })
     } catch (e) {
-      setError(String(e))
+      setError(e instanceof Error ? e.message : String(e))
     } finally {
       setGenerating(false)
     }
