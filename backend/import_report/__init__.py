@@ -180,7 +180,7 @@ def _handle(req: func.HttpRequest, customer_id: str) -> func.HttpResponse:
 
     month_str = field('month')
     year_str = field('year')
-    report_date = field('reportDate') or datetime.now(timezone.utc).date().isoformat()
+    field('reportDate')  # stored in blob filename via original docx; not persisted separately
 
     if not month_str or not year_str:
         return _json({'error': 'month and year are required'}, 400)

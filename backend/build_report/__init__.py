@@ -57,9 +57,8 @@ def _build_user_prompt(
 
     if exception_summary and exception_summary.get('totalCount', 0) > 0:
         top_cats = exception_summary.get('byCategory', [])[:3]
-        cat_names = ', '.join(c['category'] for c in top_cats) if top_cats else 'various'
         lines.append(
-            f"\nException Floor (business-critical servers excluded from optimization):"
+            "\nException Floor (business-critical servers excluded from optimization):"
         )
         lines.append(
             f"  {exception_summary['totalCount']} servers, "
@@ -73,7 +72,7 @@ def _build_user_prompt(
                 )
 
     # Exception & signal delta data for the dedicated narrative section
-    lines.append(f"\nException & Signal Delta Summary:")
+    lines.append("\nException & Signal Delta Summary:")
     lines.append(f"  CloudHealth Signal (theoretical max): ${total_signal:,.2f}")
     lines.append(f"  Exception Floor (cannot optimize):    ${exc_floor:,.2f}")
     lines.append(f"  Net Addressable Opportunity:          ${net_addressable:,.2f}")
