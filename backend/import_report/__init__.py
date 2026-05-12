@@ -12,6 +12,8 @@ from shared.models import Report
 
 _DOLLAR_RE = re.compile(r'\$?\s*([\d,]+(?:\.\d{1,2})?)')
 _SECTION_RE = re.compile(r'^(?:Section\s+)?(\d+\.\d+)\b', re.IGNORECASE)
+_MAJOR_RE   = re.compile(r'^(?:Section\s+)?(\d+)\.?\s+[A-Z]')
+_BULLET_RE  = re.compile(r'^[-•*●◦▪▸\d]+[.)]\s*')
 _SERVICE_TYPES = {'EC2', 'EBS', 'RDS', 'S3', 'ElastiCache', 'Redshift',
                   'OpenSearch', 'DynamoDB', 'Consolidated'}
 
@@ -33,8 +35,17 @@ def _match_service(text: str) -> str | None:
     return None
 
 
+def _is_new_major_section(text: str) -> bool:
+    """Returns True if the paragraph looks like a top-level section header."""
+    return bool(_MAJOR_RE.match(text)) and not bool(_SECTION_RE.match(text))
+
+
+def _strip_bullet(text: str) -> str:
+    return _BULLET_RE.sub('', text).strip()
+
+
 def _parse_docx(file_bytes: bytes) -> dict:
-    from docx import Document  # import here so non-docx paths skip the dependency
+    from docx import Document
 
     extracted: dict = {
         'monthlySavings': {},
@@ -42,40 +53,52 @@ def _parse_docx(file_bytes: bytes) -> dict:
         'topMoversDown': [],
         'realizedSavings': 0.0,
         'exceptionFloor': 0.0,
-        'nextSteps': [],
+        'nextSteps': [],           # "Before Next Meeting" one-time items
+        'ongoingNextSteps': [],    # "Ongoing" recurring commitments
+        'plannedSavings': [],      # Upcoming pipeline items (section 2.3)
+        'projectUpdates': [],      # Migration / project status items
+        'progressNarrative': '',   # Section 2 prose paragraphs
     }
 
     doc = Document(BytesIO(file_bytes))
 
-    # ── Tables: find savings signal table ─────────────────────────────────────
+    # ── Tables: savings signal table ───────────────────────────────────────────
     for table in doc.tables:
         if not table.rows:
             continue
         headers = [c.text.strip() for c in table.rows[0].cells]
         header_text = ' '.join(headers).lower()
-
-        # Detect service-type tables by header keywords
         if not ('service' in header_text or 'saving' in header_text or
                 any(s.lower() in header_text for s in _SERVICE_TYPES)):
             continue
-
         for row in table.rows[1:]:
             cells = [c.text.strip() for c in row.cells]
             if not cells or not cells[0]:
                 continue
             svc = _match_service(cells[0])
             if svc:
-                # Last non-empty cell with a dollar-like value wins
                 for cell_val in reversed(cells[1:]):
                     amt = _extract_dollar(cell_val)
                     if amt > 0:
                         extracted['monthlySavings'][svc] = amt
                         break
 
-    # ── Paragraphs ─────────────────────────────────────────────────────────────
-    in_next_steps = False
-    in_top_movers_up = False
-    in_top_movers_down = False
+    # ── Paragraphs: state machine ──────────────────────────────────────────────
+    # Modes
+    IN_NONE          = 'none'
+    IN_SECTION2      = 'section2'       # generic section 2 prose
+    IN_PLANNED       = 'planned'        # 2.3 or keyword "Upcoming Planned Savings"
+    IN_PROJECTS      = 'projects'       # 2.4 / migration / project updates
+    IN_MOVERS_UP     = 'movers_up'
+    IN_MOVERS_DOWN   = 'movers_down'
+    IN_STEPS_BEFORE  = 'steps_before'   # Section 9, "Before Next Meeting"
+    IN_STEPS_ONGOING = 'steps_ongoing'  # Section 9, "Ongoing"
+
+    mode = IN_NONE
+    progress_parts: list[str] = []
+
+    def set_mode(new_mode: str) -> str:
+        return new_mode
 
     for para in doc.paragraphs:
         text = para.text.strip()
@@ -83,57 +106,126 @@ def _parse_docx(file_bytes: bytes) -> dict:
             continue
         lower = text.lower()
 
-        # Detect section transitions
+        # ── Numbered subsection header (e.g. "2.3 Upcoming Planned Savings") ──
         sec_m = _SECTION_RE.match(text)
         if sec_m:
-            sec = sec_m.group(1)
-            in_next_steps = sec.startswith('9')
-            in_top_movers_up = sec == '4.1'
-            in_top_movers_down = sec == '4.2'
-            continue
+            sec  = sec_m.group(1)
+            major = sec.split('.')[0]
+            rest  = text[sec_m.end():].strip().lower()
 
-        # Keyword-based section detection (for docs without numeric headers)
-        if re.search(r'next\s+steps?|recommended\s+actions?', lower):
-            in_next_steps = True
-            in_top_movers_up = in_top_movers_down = False
-            continue
-        if re.search(r'top\s+movers?\s+(up|increase|rais)', lower):
-            in_top_movers_up = True
-            in_top_movers_down = in_next_steps = False
-            continue
-        if re.search(r'top\s+movers?\s+(down|decrease|reduc)', lower):
-            in_top_movers_down = True
-            in_top_movers_up = in_next_steps = False
-            continue
-
-        # Next steps collection
-        if in_next_steps:
-            # Stop at a new top-level section
-            if re.match(r'^(?:Section\s+)?\d+\.?\s+[A-Z]', text):
-                in_next_steps = False
+            if major == '2':
+                if re.search(r'planned\s+sav|upcoming|pipeline', rest):
+                    mode = IN_PLANNED
+                elif re.search(r'migrat|project|status|update|in.progress', rest):
+                    mode = IN_PROJECTS
+                else:
+                    mode = IN_SECTION2
+            elif sec == '4.1' or re.search(r'mover.*(up|increas)', rest):
+                mode = IN_MOVERS_UP
+            elif sec == '4.2' or re.search(r'mover.*(down|decreas|reduc)', rest):
+                mode = IN_MOVERS_DOWN
+            elif major == '9' or re.search(r'next\s+step|recommended', rest):
+                mode = IN_STEPS_BEFORE
             else:
-                step = re.sub(r'^[-•*•●◦\d]+[.)]\s*', '', text).strip()
-                if step and len(step) > 8 and step not in extracted['nextSteps']:
-                    extracted['nextSteps'].append(step)
+                mode = IN_NONE
             continue
 
-        # Top movers up — look for lines like "EC2: +$12,345" or "EC2 increased $..."
-        if in_top_movers_up:
+        # ── Major section header (e.g. "9. Next Steps") ───────────────────────
+        if _is_new_major_section(text):
+            if re.search(r'next\s+step|action', lower):
+                mode = IN_STEPS_BEFORE
+            elif re.search(r'^2\b', text):
+                mode = IN_SECTION2
+            else:
+                mode = IN_NONE
+            continue
+
+        # ── Keyword-based mode transitions (no section numbers) ───────────────
+        if mode not in (IN_STEPS_BEFORE, IN_STEPS_ONGOING):
+            if re.search(r'upcoming\s+planned\s+sav|planned\s+sav.*pipeline', lower) and len(text) < 80:
+                mode = IN_PLANNED
+                continue
+            if re.search(r'top\s+movers?\s+(up|increas)', lower) and len(text) < 80:
+                mode = IN_MOVERS_UP
+                continue
+            if re.search(r'top\s+movers?\s+(down|decreas|reduc)', lower) and len(text) < 80:
+                mode = IN_MOVERS_DOWN
+                continue
+            if re.search(r'next\s+steps?\s*$|recommended\s+actions?\s*$', lower) and len(text) < 60:
+                mode = IN_STEPS_BEFORE
+                continue
+
+        # ── Within Next Steps — detect Ongoing vs Before subsection ───────────
+        if mode in (IN_STEPS_BEFORE, IN_STEPS_ONGOING):
+            if re.search(r'\bongoin\b', lower) and len(text) < 50:
+                mode = IN_STEPS_ONGOING
+                continue
+            if re.search(r'before\s+(next\s+)?meet', lower) and len(text) < 80:
+                mode = IN_STEPS_BEFORE
+                continue
+            if _is_new_major_section(text):
+                mode = IN_NONE
+                continue
+            item = _strip_bullet(text)
+            if item and len(item) > 8:
+                if mode == IN_STEPS_ONGOING:
+                    if item not in extracted['ongoingNextSteps']:
+                        extracted['ongoingNextSteps'].append(item)
+                else:
+                    if item not in extracted['nextSteps']:
+                        extracted['nextSteps'].append(item)
+            continue
+
+        # ── Planned savings ───────────────────────────────────────────────────
+        if mode == IN_PLANNED:
+            if _is_new_major_section(text) or sec_m:
+                pass  # will be caught above on next iter
+            else:
+                item = _strip_bullet(text)
+                if item and len(item) > 5 and item not in extracted['plannedSavings']:
+                    extracted['plannedSavings'].append(item)
+            continue
+
+        # ── Project / migration updates ────────────────────────────────────────
+        if mode == IN_PROJECTS:
+            if _is_new_major_section(text):
+                pass
+            else:
+                item = _strip_bullet(text)
+                if item and len(item) > 5 and item not in extracted['projectUpdates']:
+                    extracted['projectUpdates'].append(item)
+            continue
+
+        # ── Top movers ────────────────────────────────────────────────────────
+        if mode == IN_MOVERS_UP:
             svc = _match_service(text)
             amt = _extract_dollar(text)
             if svc and amt > 0 and not any(m['serviceType'] == svc for m in extracted['topMoversUp']):
                 extracted['topMoversUp'].append({'serviceType': svc, 'amount': amt})
             continue
 
-        # Top movers down
-        if in_top_movers_down:
+        if mode == IN_MOVERS_DOWN:
             svc = _match_service(text)
             amt = _extract_dollar(text)
             if svc and amt > 0 and not any(m['serviceType'] == svc for m in extracted['topMoversDown']):
                 extracted['topMoversDown'].append({'serviceType': svc, 'amount': amt})
             continue
 
-        # Inline keyword extractions (anywhere in doc)
+        # ── Section 2 prose → progressNarrative ───────────────────────────────
+        if mode == IN_SECTION2:
+            if not _BULLET_RE.match(text) and len(text) > 40:
+                progress_parts.append(text)
+            # Also look for migration/project mentions in free prose
+            if re.search(
+                r'\b(fsx|migrat|on\s+hold|vendor\s+meet|domain\s+controller|'
+                r'pending\s+terminat|dxc|in\s+progress|scheduled)\b', lower
+            ):
+                item = text.strip()
+                if len(item) > 15 and item not in extracted['projectUpdates']:
+                    extracted['projectUpdates'].append(item)
+            continue
+
+        # ── Inline keyword extractions (anywhere in doc) ──────────────────────
         if re.search(r'realized\s+saving', lower):
             amt = _extract_dollar(text)
             if amt > 0:
@@ -145,9 +237,14 @@ def _parse_docx(file_bytes: bytes) -> dict:
                 extracted['exceptionFloor'] = amt
 
     # Cap lists
-    extracted['nextSteps'] = extracted['nextSteps'][:20]
-    extracted['topMoversUp'] = extracted['topMoversUp'][:5]
-    extracted['topMoversDown'] = extracted['topMoversDown'][:5]
+    extracted['nextSteps']        = extracted['nextSteps'][:20]
+    extracted['ongoingNextSteps'] = extracted['ongoingNextSteps'][:10]
+    extracted['topMoversUp']      = extracted['topMoversUp'][:5]
+    extracted['topMoversDown']    = extracted['topMoversDown'][:5]
+    extracted['plannedSavings']   = extracted['plannedSavings'][:15]
+    extracted['projectUpdates']   = extracted['projectUpdates'][:10]
+    extracted['progressNarrative'] = '\n'.join(progress_parts[:6])
+
     return extracted
 
 
@@ -169,30 +266,27 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
 
 
 def _handle(req: func.HttpRequest, customer_id: str) -> func.HttpResponse:
-    # ── Validate customer ──────────────────────────────────────────────────────
     customer = cosmos_client.get_customer(customer_id)
     if customer is None:
         return _json({'error': f'Customer {customer_id!r} not found'}, 404)
 
-    # ── Form fields ────────────────────────────────────────────────────────────
     def field(name: str) -> str:
         return (req.params.get(name) or req.form.get(name, '')).strip()
 
     month_str = field('month')
-    year_str = field('year')
-    field('reportDate')  # stored in blob filename via original docx; not persisted separately
+    year_str  = field('year')
+    field('reportDate')
 
     if not month_str or not year_str:
         return _json({'error': 'month and year are required'}, 400)
     try:
         month = int(month_str)
-        year = int(year_str)
+        year  = int(year_str)
     except ValueError:
         return _json({'error': 'month and year must be integers'}, 400)
     if not 1 <= month <= 12:
         return _json({'error': 'month must be 1–12'}, 400)
 
-    # ── File ───────────────────────────────────────────────────────────────────
     uploaded = req.files.get('file')
     if uploaded is None:
         return _json({'error': 'multipart field "file" is required'}, 400)
@@ -203,21 +297,20 @@ def _handle(req: func.HttpRequest, customer_id: str) -> func.HttpResponse:
 
     file_bytes = uploaded.read()
 
-    # ── Parse docx ─────────────────────────────────────────────────────────────
     try:
         extracted_data = _parse_docx(file_bytes)
     except Exception as exc:
         logging.warning('docx parse error (storing empty extractedData): %s', exc)
         extracted_data = {
             'monthlySavings': {}, 'topMoversUp': [], 'topMoversDown': [],
-            'realizedSavings': 0.0, 'exceptionFloor': 0.0, 'nextSteps': [],
+            'realizedSavings': 0.0, 'exceptionFloor': 0.0,
+            'nextSteps': [], 'ongoingNextSteps': [],
+            'plannedSavings': [], 'projectUpdates': [], 'progressNarrative': '',
         }
 
-    # ── Upload docx to blob ────────────────────────────────────────────────────
     blob_path = blob_client.upload_docx(customer_id, month, year, file_bytes, filename)
 
-    # ── Save Report record ─────────────────────────────────────────────────────
-    report_id = str(uuid.uuid4())
+    report_id   = str(uuid.uuid4())
     generated_at = datetime.now(timezone.utc)
     report = Report(
         id=report_id,
@@ -235,10 +328,14 @@ def _handle(req: func.HttpRequest, customer_id: str) -> func.HttpResponse:
     cosmos_client.create_report(report)
 
     logging.info(
-        'Imported report %s for %s/%d/%d — monthlySavings keys: %s, nextSteps: %d',
+        'Imported report %s for %s/%d/%d — monthlySavings=%s nextSteps=%d '
+        'plannedSavings=%d projectUpdates=%d ongoingNextSteps=%d',
         report_id, customer_id, month, year,
         list(extracted_data['monthlySavings'].keys()),
         len(extracted_data['nextSteps']),
+        len(extracted_data['plannedSavings']),
+        len(extracted_data['projectUpdates']),
+        len(extracted_data['ongoingNextSteps']),
     )
 
     return _json({

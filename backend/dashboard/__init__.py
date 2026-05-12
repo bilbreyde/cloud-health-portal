@@ -123,13 +123,17 @@ def _handle_get(customer_id: str, force: bool) -> func.HttpResponse:
     net_addressable = max(0.0, total_signal - exc_floor)
 
     # ── Report continuity ──────────────────────────────────────────────────────
-    realized_savings = 0.0
-    prev_next_steps: list = []
-    prev_report_label = ''
-    joel_notes = ''
+    realized_savings:   float = 0.0
+    prev_next_steps:    list  = []
+    ongoing_next_steps: list  = []
+    planned_savings:    list  = []
+    project_updates:    list  = []
+    progress_narrative: str   = ''
+    prev_report_label:  str   = ''
+    joel_notes:         str   = ''
 
     try:
-        all_reports = cosmos_client.list_reports(customer_id)
+        all_reports  = cosmos_client.list_reports(customer_id)
         real_reports = [r for r in all_reports if r.source not in (_CACHE_SRC, None)]
 
         imported_curr = next(
@@ -151,7 +155,12 @@ def _handle_get(customer_id: str, force: bool) -> func.HttpResponse:
             realized_savings = float(imported_curr.extractedData.get('realizedSavings', 0.0))
 
         if imported_prev and imported_prev.extractedData:
-            prev_next_steps = imported_prev.extractedData.get('nextSteps', []) or []
+            ed                 = imported_prev.extractedData
+            prev_next_steps    = ed.get('nextSteps', []) or []
+            ongoing_next_steps = ed.get('ongoingNextSteps', []) or []
+            planned_savings    = ed.get('plannedSavings', []) or []
+            project_updates    = ed.get('projectUpdates', []) or []
+            progress_narrative = ed.get('progressNarrative', '') or ''
             try:
                 prev_report_label = datetime(imported_prev.year, imported_prev.month, 1).strftime('%B %Y')
             except Exception:
@@ -206,18 +215,38 @@ def _handle_get(customer_id: str, force: bool) -> func.HttpResponse:
         lines.append("\nTop cost reductions this month:")
         for svc, d in movers_down:
             lines.append(f"  {svc}: ${d:,.2f}")
+
+    prev_label = prev_report_label or 'previous report'
     if prev_next_steps:
-        lines.append(f"\nCommitted next steps from {prev_report_label or 'previous report'}:")
-        for step in prev_next_steps[:5]:
-            lines.append(f"  - {step}")
+        lines.append(f"\nCommitments from {prev_label} (one-time items):")
+        for s in prev_next_steps[:6]:
+            lines.append(f"  • {s}")
+    if ongoing_next_steps:
+        lines.append(f"\nOngoing commitments from {prev_label}:")
+        for s in ongoing_next_steps[:4]:
+            lines.append(f"  • {s}")
+    if planned_savings:
+        lines.append("\nUpcoming planned savings pipeline (not yet in signal):")
+        for s in planned_savings[:6]:
+            lines.append(f"  • {s}")
+    if project_updates:
+        lines.append("\nActive projects / migration status:")
+        for s in project_updates[:5]:
+            lines.append(f"  • {s}")
+    if progress_narrative:
+        lines.append(f"\nPrevious report progress context:\n{progress_narrative[:800]}")
     if joel_notes:
-        lines.append(f"\nEngagement manager notes: {joel_notes}")
+        lines.append(f"\nEngagement manager notes (ground truth):\n{joel_notes}")
+
     lines.append("""
 Generate a concise executive dashboard narrative. Return a JSON object with exactly these four string keys:
-  "situation"      - 2-3 sentences on the current state of cloud spend and savings opportunity
-  "trend"          - 1-2 sentences summarizing month-over-month movement (what went up, what went down)
+  "situation"      - 2-3 sentences on the current state of cloud spend and savings opportunity;
+                     mention any in-flight projects or pipeline items that affect the picture
+  "trend"          - 1-2 sentences summarizing month-over-month movement; explain notable increases
+                     using project context where relevant (e.g. intentional upsizing)
   "exceptions"     - 1-2 sentences on the exception floor impact and net addressable opportunity
-  "recommendation" - 1-2 sentences with the single most important action for this engagement right now
+  "recommendation" - 1-2 sentences with the single most important action for this engagement right now;
+                     reference the planned savings pipeline or pending project decisions if applicable
 
 Keep each section tight and direct. Tone: confident consultant, dashboard glance — not a full report.
 Return only the JSON object. No markdown fences.""")
@@ -233,8 +262,13 @@ Return only the JSON object. No markdown fences.""")
         completion = ai_client.chat.completions.create(
             model=os.environ.get('AI_DEPLOYMENT_NAME', 'gpt-5.1'),
             messages=[
-                {'role': 'system', 'content':
-                 'You are a senior cloud cost optimization consultant writing concise dashboard insights.'},
+                {'role': 'system', 'content': (
+                    'You are a senior cloud cost optimization consultant writing concise dashboard insights. '
+                    'You have access to context from the previous report cycle — commitments, projects in flight, '
+                    'and the engagement manager\'s notes. This context is ground truth; weight it heavily. '
+                    'Explain signal movements using project context where relevant. '
+                    'Reference the planned savings pipeline and in-flight migrations by name when present.'
+                )},
                 {'role': 'user', 'content': '\n'.join(lines)},
             ],
             response_format={'type': 'json_object'},
