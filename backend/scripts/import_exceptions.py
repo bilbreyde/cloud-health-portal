@@ -28,7 +28,7 @@ def main() -> None:
         sys.exit(1)
 
     url = f"{args.api_url.rstrip('/')}/api/exceptions/{args.customer_id}/import"
-    print(f'Uploading {file_path} → {url}')
+    print(f'Uploading {file_path} -> {url}')
 
     with open(file_path, 'rb') as f:
         resp = requests.post(url, files={'file': (os.path.basename(file_path), f, 'application/octet-stream')})
