@@ -80,7 +80,9 @@ def _handle_get(customer_id: str, force: bool) -> func.HttpResponse:
     if customer is None:
         return cors_response({'error': f'Customer {customer_id!r} not found'}, 404)
 
-    if not force:
+    if force:
+        cosmos_client.delete_dashboard_cache(customer_id)
+    else:
         cached = _get_cache(customer_id)
         if cached:
             narrative = json.loads(cached.narrativeDraft or '{}')
@@ -125,18 +127,18 @@ def _handle_get(customer_id: str, force: bool) -> func.HttpResponse:
     net_addressable = max(0.0, total_signal - exc_floor)
 
     # ── Report continuity ──────────────────────────────────────────────────────
-    realized_savings:   float = 0.0
-    prev_next_steps:    list  = []
-    ongoing_next_steps: list  = []
-    planned_savings:    list  = []
-    project_updates:    list  = []
-    progress_narrative: str   = ''
-    prev_report_label:  str   = ''
-    joel_notes:         str   = ''
+    realized_savings: float = 0.0
+    prev_next_steps: list = []
+    ongoing_next_steps: list = []
+    planned_savings: list = []
+    project_updates: list = []
+    progress_narrative: str = ''
+    prev_report_label: str = ''
+    joel_notes: str = ''
 
     try:
         # ── Import reports: match by reporting period (month/year matters here) ─
-        all_reports  = cosmos_client.list_reports(customer_id)
+        all_reports = cosmos_client.list_reports(customer_id)
         real_reports = [r for r in all_reports if r.source not in (_CACHE_SRC, None)]
 
         imported_curr = next(
@@ -154,11 +156,11 @@ def _handle_get(customer_id: str, force: bool) -> func.HttpResponse:
             realized_savings = float(imported_curr.extractedData.get('realizedSavings', 0.0))
 
         if imported_prev and imported_prev.extractedData:
-            ed                 = imported_prev.extractedData
-            prev_next_steps    = ed.get('nextSteps', []) or []
+            ed = imported_prev.extractedData
+            prev_next_steps = ed.get('nextSteps', []) or []
             ongoing_next_steps = ed.get('ongoingNextSteps', []) or []
-            planned_savings    = ed.get('plannedSavings', []) or []
-            project_updates    = ed.get('projectUpdates', []) or []
+            planned_savings = ed.get('plannedSavings', []) or []
+            project_updates = ed.get('projectUpdates', []) or []
             progress_narrative = ed.get('progressNarrative', '') or ''
             try:
                 prev_report_label = datetime(imported_prev.year, imported_prev.month, 1).strftime('%B %Y')

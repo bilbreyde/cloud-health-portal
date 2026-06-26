@@ -12,8 +12,8 @@ from shared.response_helpers import cors_options, cors_response
 
 _DOLLAR_RE = re.compile(r'\$?\s*([\d,]+(?:\.\d{1,2})?)')
 _SECTION_RE = re.compile(r'^(?:Section\s+)?(\d+\.\d+)\b', re.IGNORECASE)
-_MAJOR_RE   = re.compile(r'^(?:Section\s+)?(\d+)\.?\s+[A-Z]')
-_BULLET_RE  = re.compile(r'^[-•*●◦▪▸\d]+[.)]\s*')
+_MAJOR_RE = re.compile(r'^(?:Section\s+)?(\d+)\.?\s+[A-Z]')
+_BULLET_RE = re.compile(r'^[-•*●◦▪▸\d]+[.)]\s*')
 _SERVICE_TYPES = {'EC2', 'EBS', 'RDS', 'S3', 'ElastiCache', 'Redshift',
                   'OpenSearch', 'DynamoDB', 'Consolidated'}
 
@@ -85,13 +85,13 @@ def _parse_docx(file_bytes: bytes) -> dict:
 
     # ── Paragraphs: state machine ──────────────────────────────────────────────
     # Modes
-    IN_NONE          = 'none'
-    IN_SECTION2      = 'section2'       # generic section 2 prose
-    IN_PLANNED       = 'planned'        # 2.3 or keyword "Upcoming Planned Savings"
-    IN_PROJECTS      = 'projects'       # 2.4 / migration / project updates
-    IN_MOVERS_UP     = 'movers_up'
-    IN_MOVERS_DOWN   = 'movers_down'
-    IN_STEPS_BEFORE  = 'steps_before'   # Section 9, "Before Next Meeting"
+    IN_NONE = 'none'
+    IN_SECTION2 = 'section2'       # generic section 2 prose
+    IN_PLANNED = 'planned'        # 2.3 or keyword "Upcoming Planned Savings"
+    IN_PROJECTS = 'projects'       # 2.4 / migration / project updates
+    IN_MOVERS_UP = 'movers_up'
+    IN_MOVERS_DOWN = 'movers_down'
+    IN_STEPS_BEFORE = 'steps_before'   # Section 9, "Before Next Meeting"
     IN_STEPS_ONGOING = 'steps_ongoing'  # Section 9, "Ongoing"
 
     mode = IN_NONE
@@ -109,9 +109,9 @@ def _parse_docx(file_bytes: bytes) -> dict:
         # ── Numbered subsection header (e.g. "2.3 Upcoming Planned Savings") ──
         sec_m = _SECTION_RE.match(text)
         if sec_m:
-            sec  = sec_m.group(1)
+            sec = sec_m.group(1)
             major = sec.split('.')[0]
-            rest  = text[sec_m.end():].strip().lower()
+            rest = text[sec_m.end():].strip().lower()
 
             if major == '2':
                 if re.search(r'planned\s+sav|upcoming|pipeline', rest):
@@ -237,12 +237,12 @@ def _parse_docx(file_bytes: bytes) -> dict:
                 extracted['exceptionFloor'] = amt
 
     # Cap lists
-    extracted['nextSteps']        = extracted['nextSteps'][:20]
+    extracted['nextSteps'] = extracted['nextSteps'][:20]
     extracted['ongoingNextSteps'] = extracted['ongoingNextSteps'][:10]
-    extracted['topMoversUp']      = extracted['topMoversUp'][:5]
-    extracted['topMoversDown']    = extracted['topMoversDown'][:5]
-    extracted['plannedSavings']   = extracted['plannedSavings'][:15]
-    extracted['projectUpdates']   = extracted['projectUpdates'][:10]
+    extracted['topMoversUp'] = extracted['topMoversUp'][:5]
+    extracted['topMoversDown'] = extracted['topMoversDown'][:5]
+    extracted['plannedSavings'] = extracted['plannedSavings'][:15]
+    extracted['projectUpdates'] = extracted['projectUpdates'][:10]
     extracted['progressNarrative'] = '\n'.join(progress_parts[:6])
 
     return extracted
@@ -271,14 +271,14 @@ def _handle(req: func.HttpRequest, customer_id: str) -> func.HttpResponse:
         return (req.params.get(name) or req.form.get(name, '')).strip()
 
     month_str = field('month')
-    year_str  = field('year')
+    year_str = field('year')
     field('reportDate')
 
     if not month_str or not year_str:
         return cors_response({'error': 'month and year are required'}, 400)
     try:
         month = int(month_str)
-        year  = int(year_str)
+        year = int(year_str)
     except ValueError:
         return cors_response({'error': 'month and year must be integers'}, 400)
     if not 1 <= month <= 12:
@@ -307,7 +307,7 @@ def _handle(req: func.HttpRequest, customer_id: str) -> func.HttpResponse:
 
     blob_path = blob_client.upload_docx(customer_id, month, year, file_bytes, filename)
 
-    report_id   = str(uuid.uuid4())
+    report_id = str(uuid.uuid4())
     generated_at = datetime.now(timezone.utc)
     report = Report(
         id=report_id,

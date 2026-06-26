@@ -54,9 +54,9 @@ def _build_user_prompt(
     progress_narrative: str = '',
     ongoing_next_steps: list | None = None,
 ) -> str:
-    month_label    = datetime(year, month, 1).strftime('%B %Y')
-    total_signal   = sum(curr_data.values())
-    exc_floor      = exception_summary['totalMonthlyCost'] if exception_summary else 0.0
+    month_label = datetime(year, month, 1).strftime('%B %Y')
+    total_signal = sum(curr_data.values())
+    exc_floor = exception_summary['totalMonthlyCost'] if exception_summary else 0.0
     net_addressable = max(0.0, total_signal - exc_floor)
 
     lines = [
@@ -184,9 +184,9 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         return cors_response({'error': 'Request body must be valid JSON'}, 400)
 
     customer_id = (body.get('customerId') or '').strip()
-    month       = body.get('month')
-    year        = body.get('year')
-    joel_notes  = (body.get('joelNotes') or '').strip()
+    month = body.get('month')
+    year = body.get('year')
+    joel_notes = (body.get('joelNotes') or '').strip()
 
     if not customer_id:
         return cors_response({'error': 'customerId is required'}, 400)
@@ -225,15 +225,15 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         # ── Step 3: Fetch imported report context ─────────────────────────────
         step = 'fetching imported report context'
         logging.info('Step 3: Fetching imported report context')
-        realized_savings  = 0.0
-        prev_next_steps:    list = []
+        realized_savings = 0.0
+        prev_next_steps: list = []
         ongoing_next_steps: list = []
-        planned_savings:    list = []
-        project_updates:    list = []
-        progress_narrative: str  = ''
+        planned_savings: list = []
+        project_updates: list = []
+        progress_narrative: str = ''
 
         try:
-            all_reports   = cosmos_client.list_reports(customer_id)
+            all_reports = cosmos_client.list_reports(customer_id)
             imported_curr = next(
                 (r for r in all_reports
                  if r.source == 'manual_import' and r.year == year and r.month == month),
@@ -250,11 +250,11 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
                 realized_savings = float(imported_curr.extractedData.get('realizedSavings', 0.0))
 
             if imported_prev and imported_prev.extractedData:
-                ed                 = imported_prev.extractedData
-                prev_next_steps    = ed.get('nextSteps', []) or []
+                ed = imported_prev.extractedData
+                prev_next_steps = ed.get('nextSteps', []) or []
                 ongoing_next_steps = ed.get('ongoingNextSteps', []) or []
-                planned_savings    = ed.get('plannedSavings', []) or []
-                project_updates    = ed.get('projectUpdates', []) or []
+                planned_savings = ed.get('plannedSavings', []) or []
+                project_updates = ed.get('projectUpdates', []) or []
                 progress_narrative = ed.get('progressNarrative', '') or ''
                 if not prev_trends:
                     prev_data = ed.get('monthlySavings', {})
@@ -396,7 +396,7 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
             'traceback': tb,
         }, 500)
 
-    exc_floor    = exception_summary['totalMonthlyCost'] if exception_summary else 0.0
+    exc_floor = exception_summary['totalMonthlyCost'] if exception_summary else 0.0
     total_signal = sum(curr_data.values())
 
     return cors_response({

@@ -11,6 +11,7 @@ def _utc(dt):
     """Normalize datetime to UTC-aware for safe comparison."""
     return dt if (dt is None or dt.tzinfo is not None) else dt.replace(tzinfo=timezone.utc)
 
+
 _DB_NAME = "cloud-health-portal"
 _CONTAINERS = {
     "customers": "/customerId",
@@ -212,6 +213,14 @@ def update_report(report: Report) -> Report:
 def delete_report(report_id: str, customer_id: str) -> None:
     container = _get_container("reports")
     container.delete_item(item=report_id, partition_key=customer_id)
+
+
+def delete_dashboard_cache(customer_id: str) -> None:
+    container = _get_container("reports")
+    try:
+        container.delete_item(item=f'dash-{customer_id}', partition_key=customer_id)
+    except exceptions.CosmosResourceNotFoundError:
+        pass
 
 
 def get_reports_with_context(customer_id: str, limit: int = 10) -> list[Report]:

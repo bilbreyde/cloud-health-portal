@@ -11,7 +11,7 @@ from docx.oxml.ns import qn
 from docx.shared import Inches, Pt, RGBColor
 
 from shared import blob_client, cosmos_client
-from shared.response_helpers import CORS_HEADERS, cors_options, cors_response
+from shared.response_helpers import cors_options, cors_response
 from shared.trend_engine import compute_mom_delta
 
 _BLUE = RGBColor(0x17, 0x5E, 0x8C)
@@ -437,8 +437,8 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         return cors_response({'error': 'Request body must be valid JSON'}, 400)
 
     customer_id = (body.get('customerId') or '').strip()
-    month       = body.get('month')
-    year        = body.get('year')
+    month = body.get('month')
+    year = body.get('year')
 
     if not customer_id:
         return cors_response({'error': 'customerId is required'}, 400)
@@ -451,7 +451,7 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
     if customer is None:
         return cors_response({'error': f'Customer {customer_id!r} not found'}, 404)
 
-    all_trends  = cosmos_client.list_trends(customer_id)
+    all_trends = cosmos_client.list_trends(customer_id)
     curr_trends = [t for t in all_trends if t.year == year and t.month == month]
     if not curr_trends:
         return cors_response(
@@ -470,17 +470,17 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         'executive_summary': '', 'optimization_narrative': '',
         'top_movers_analysis': '', 'risks_and_next_steps': '', 'exception_delta': '',
     }
-    joel_notes:         str   = ''
-    realized_savings:   float = 0.0
-    prev_next_steps:    list  = []
-    ongoing_next_steps: list  = []
-    planned_savings:    list  = []
-    project_updates:    list  = []
-    progress_narrative: str   = ''
+    joel_notes: str = ''
+    realized_savings: float = 0.0
+    prev_next_steps: list = []
+    ongoing_next_steps: list = []
+    planned_savings: list = []
+    project_updates: list = []
+    progress_narrative: str = ''
 
     try:
-        all_reports   = cosmos_client.list_reports(customer_id)
-        generated     = next(
+        all_reports = cosmos_client.list_reports(customer_id)
+        generated = next(
             (r for r in all_reports if r.source == 'generated' and r.year == year and r.month == month),
             None,
         ) or next((r for r in all_reports if r.source == 'generated'), None)
@@ -503,11 +503,11 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
             realized_savings = float(imported_curr.extractedData.get('realizedSavings', 0.0))
 
         if imported_prev and imported_prev.extractedData:
-            ed                 = imported_prev.extractedData
-            prev_next_steps    = ed.get('nextSteps', []) or []
+            ed = imported_prev.extractedData
+            prev_next_steps = ed.get('nextSteps', []) or []
             ongoing_next_steps = ed.get('ongoingNextSteps', []) or []
-            planned_savings    = ed.get('plannedSavings', []) or []
-            project_updates    = ed.get('projectUpdates', []) or []
+            planned_savings = ed.get('plannedSavings', []) or []
+            project_updates = ed.get('projectUpdates', []) or []
             progress_narrative = ed.get('progressNarrative', '') or ''
             if not prev_data:
                 prev_data = ed.get('monthlySavings', {})
@@ -515,7 +515,7 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         logging.warning('Report data lookup failed (non-fatal): %s', exc)
 
     # ── MoM deltas ────────────────────────────────────────────────────────────
-    top_movers_up:   list = []
+    top_movers_up: list = []
     top_movers_down: list = []
     service_summary: list = []
 
@@ -546,11 +546,11 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
     except Exception as exc:
         logging.warning('Exception data fetch failed (non-fatal): %s', exc)
 
-    exc_floor      = exc_summary['totalMonthlyCost'] if exc_summary else 0.0
-    total_signal   = sum(curr_data.values())
+    exc_floor = exc_summary['totalMonthlyCost'] if exc_summary else 0.0
+    total_signal = sum(curr_data.values())
     net_addressable = max(0.0, total_signal - exc_floor)
-    remaining      = max(0.0, net_addressable - realized_savings)
-    month_label    = datetime(year, month, 1).strftime('%B %Y')
+    remaining = max(0.0, net_addressable - realized_savings)
+    month_label = datetime(year, month, 1).strftime('%B %Y')
 
     # ── Build document ─────────────────────────────────────────────────────────
     try:

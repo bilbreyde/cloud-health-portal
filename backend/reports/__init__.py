@@ -3,7 +3,7 @@ import logging
 import azure.functions as func
 
 from shared import blob_client, cosmos_client
-from shared.response_helpers import CORS_HEADERS, cors_options, cors_response
+from shared.response_helpers import cors_options, cors_response
 
 
 def main(req: func.HttpRequest) -> func.HttpResponse:
