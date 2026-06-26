@@ -48,6 +48,9 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
             None,
         )
         latest_generated = next(
+            (r for r in real_reports if r.source == 'generated' and r.joelNotes),
+            None,
+        ) or next(
             (r for r in real_reports if r.source == 'generated'),
             None,
         )

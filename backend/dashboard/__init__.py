@@ -166,6 +166,13 @@ def _handle_get(customer_id: str, force: bool) -> func.HttpResponse:
             except Exception:
                 prev_report_label = f'{imported_prev.month}/{imported_prev.year}'
 
+        # Prefer most recent generated report that actually has notes;
+        # fall back to most recent generated report regardless.
+        if not latest_generated or not latest_generated.joelNotes:
+            latest_generated = next(
+                (r for r in real_reports if r.source == 'generated' and r.joelNotes),
+                latest_generated,
+            )
         if latest_generated and latest_generated.joelNotes:
             joel_notes = latest_generated.joelNotes
     except Exception as exc:

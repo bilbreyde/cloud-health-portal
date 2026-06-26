@@ -1,4 +1,4 @@
-﻿{
+{
   "scriptFile": "__init__.py",
   "bindings": [
     {
@@ -6,8 +6,8 @@
       "type": "httpTrigger",
       "direction": "in",
       "name": "req",
-      "methods": ["get", "options"],
-      "route": "reports/{customerId}"
+      "methods": ["get", "delete", "options"],
+      "route": "reports/{customerId}/{p1?}/{p2?}"
     },
     {
       "type": "http",

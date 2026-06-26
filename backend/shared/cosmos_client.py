@@ -194,7 +194,7 @@ def list_reports(customer_id: str, year: Optional[int] = None) -> list[Report]:
     query = f"SELECT * FROM c WHERE {' AND '.join(filters)}"
     items = container.query_items(query=query, parameters=params, partition_key=customer_id)
     results = [Report.from_dict(i) for i in items]
-    return sorted(results, key=lambda r: (r.year, r.month), reverse=True)
+    return sorted(results, key=lambda r: (r.year, r.month, r.generatedAt), reverse=True)
 
 
 def update_report(report: Report) -> Report:

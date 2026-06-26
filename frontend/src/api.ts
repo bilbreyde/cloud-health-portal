@@ -98,6 +98,21 @@ export function importReport(customerId: string, formData: FormData): Promise<Im
   })
 }
 
+export async function downloadReport(customerId: string, reportId: string): Promise<Blob> {
+  const res = await fetch(`${BASE}/reports/${customerId}/${reportId}/download`)
+  if (!res.ok) {
+    const text = await res.text()
+    throw new Error(text || `HTTP ${res.status}`)
+  }
+  return res.blob()
+}
+
+export function deleteEmptyDrafts(customerId: string): Promise<{ deleted: number }> {
+  return request<{ deleted: number }>(`${BASE}/reports/${customerId}/drafts/empty`, {
+    method: 'DELETE',
+  })
+}
+
 export function fetchUploads(customerId: string): Promise<UploadRecord[]> {
   return request<UploadRecord[]>(`${BASE}/uploads/${customerId}`)
 }

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { fetchReports, importReport } from '../api'
+import { deleteEmptyDrafts, downloadReport, fetchReports, importReport } from '../api'
 import { useCustomer } from '../context/CustomerContext'
 import type { ExtractedReportData, Report } from '../types'
 
@@ -77,6 +77,9 @@ export default function History() {
   const [loading, setLoading]       = useState(false)
   const [error, setError]           = useState('')
   const [expandedId, setExpandedId] = useState<string | null>(null)
+  const [downloading, setDownloading] = useState<string | null>(null)
+  const [toast, setToast] = useState('')
+  const [cleaning, setCleaning] = useState(false)
 
   // Import modal state
   const [showModal, setShowModal]   = useState(false)
@@ -141,20 +144,72 @@ export default function History() {
     if (fileInputRef.current) fileInputRef.current.value = ''
   }
 
+  function showToast(msg: string) {
+    setToast(msg)
+    setTimeout(() => setToast(''), 4000)
+  }
+
+  async function handleDownload(reportId: string, month: number, year: number) {
+    setDownloading(reportId)
+    try {
+      const blob = await downloadReport(customerId, reportId)
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `Cloud_Report_${String(month).padStart(2, '0')}_${year}.docx`
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+      URL.revokeObjectURL(url)
+    } catch (e) {
+      showToast(`Download failed: ${e}`)
+    } finally {
+      setDownloading(null)
+    }
+  }
+
+  async function handleCleanup() {
+    if (!customerId) return
+    setCleaning(true)
+    try {
+      const result = await deleteEmptyDrafts(customerId)
+      showToast(`Deleted ${result.deleted} empty draft${result.deleted !== 1 ? 's' : ''}.`)
+      loadReports(customerId)
+    } catch (e) {
+      showToast(`Cleanup failed: ${e}`)
+    } finally {
+      setCleaning(false)
+    }
+  }
+
   return (
     <main className="page">
       <h1 className="page-title">Report History</h1>
 
+      {toast && (
+        <div className="alert alert-success" style={{ marginBottom: 12 }}>{toast}</div>
+      )}
+
       <div className="card">
         <div className="controls">
           {customerId && (
-            <button
-              className="btn btn-secondary"
-              style={{ alignSelf: 'flex-end' }}
-              onClick={() => { setShowModal(true); setImportError(''); setImportSuccess('') }}
-            >
-              Import Past Report
-            </button>
+            <>
+              <button
+                className="btn btn-ghost"
+                style={{ alignSelf: 'flex-end' }}
+                onClick={handleCleanup}
+                disabled={cleaning}
+              >
+                {cleaning ? <><span className="spinner" /> Cleaning…</> : 'Clean Up Empty Drafts'}
+              </button>
+              <button
+                className="btn btn-secondary"
+                style={{ alignSelf: 'flex-end' }}
+                onClick={() => { setShowModal(true); setImportError(''); setImportSuccess('') }}
+              >
+                Import Past Report
+              </button>
+            </>
           )}
         </div>
       </div>
@@ -211,13 +266,14 @@ export default function History() {
                       </td>
                       <td>
                         {r.blobPath ? (
-                          <a href={`https://chp-dev-func.azurewebsites.net/api/blob/${r.blobPath}`}
-                             target="_blank" rel="noreferrer"
-                             className="btn btn-ghost"
-                             style={{ padding: '3px 10px', fontSize: 12 }}
-                             onClick={e => e.stopPropagation()}>
-                            Download
-                          </a>
+                          <button
+                            className="btn btn-ghost"
+                            style={{ padding: '3px 10px', fontSize: 12 }}
+                            disabled={downloading === r.id}
+                            onClick={e => { e.stopPropagation(); handleDownload(r.id, r.month, r.year) }}
+                          >
+                            {downloading === r.id ? '…' : 'Download'}
+                          </button>
                         ) : (
                           <span style={{ color: 'var(--muted)', fontSize: 12 }}>—</span>
                         )}
