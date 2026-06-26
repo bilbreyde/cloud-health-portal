@@ -1,4 +1,4 @@
-{
+﻿{
   "scriptFile": "__init__.py",
   "bindings": [
     {
@@ -6,7 +6,7 @@
       "type": "httpTrigger",
       "direction": "in",
       "name": "req",
-      "methods": ["get"],
+      "methods": ["get", "options"],
       "route": "uploads/{customerId}"
     },
     {

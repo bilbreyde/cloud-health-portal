@@ -124,6 +124,7 @@ resource functionApp 'Microsoft.Web/sites@2023-01-01' = {
       cors: {
         allowedOrigins: [
           'https://red-sand-05177ba0f.7.azurestaticapps.net'
+          'http://localhost:5173'
         ]
         supportCredentials: false
       }
