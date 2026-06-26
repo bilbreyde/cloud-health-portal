@@ -136,6 +136,7 @@ def _handle_get(customer_id: str, force: bool) -> func.HttpResponse:
     joel_notes:         str   = ''
 
     try:
+        # ── Import reports: match by reporting period (month/year matters here) ─
         all_reports  = cosmos_client.list_reports(customer_id)
         real_reports = [r for r in all_reports if r.source not in (_CACHE_SRC, None)]
 
@@ -147,10 +148,6 @@ def _handle_get(customer_id: str, force: bool) -> func.HttpResponse:
         imported_prev = next(
             (r for r in real_reports
              if r.source == 'manual_import' and r.year == prev_year and r.month == prev_month),
-            None,
-        )
-        latest_generated = next(
-            (r for r in real_reports if r.source == 'generated'),
             None,
         )
 
@@ -169,31 +166,30 @@ def _handle_get(customer_id: str, force: bool) -> func.HttpResponse:
             except Exception:
                 prev_report_label = f'{imported_prev.month}/{imported_prev.year}'
 
-        # Debug: log all generated reports with notes so context selection is traceable
-        with_notes = [r for r in real_reports if r.source == 'generated' and r.joelNotes]
-        logging.info(
-            'dashboard context: %d generated reports with joelNotes for customer %s',
-            len(with_notes), customer_id,
+        # ── Joel notes: use _ts DESC query so most-recently WRITTEN report wins ─
+        # Sorts by Cosmos system timestamp, not (year, month) of the reporting period,
+        # so a Jun 26 report for May 2026 correctly beats a Jun 11 report for Jun 2026.
+        context_reports = cosmos_client.get_reports_with_context(customer_id, limit=10)
+        latest_generated = next(
+            (r for r in context_reports if r.source == 'generated' and r.joelNotes),
+            None,
         )
-        for r in with_notes[:10]:
+
+        logging.info(
+            'dashboard context: %d reports via _ts query; selected id=%s generatedAt=%s',
+            len(context_reports),
+            latest_generated.id if latest_generated else 'none',
+            latest_generated.generatedAt.isoformat() if latest_generated else 'n/a',
+        )
+        for r in context_reports[:5]:
             logging.info(
-                '  candidate report id=%s generatedAt=%s notes_len=%d',
-                r.id, r.generatedAt.isoformat(), len(r.joelNotes or ''),
+                '  candidate: id=%s source=%s %s/%s generatedAt=%s notes_len=%d',
+                r.id, r.source, r.month, r.year,
+                r.generatedAt.isoformat(), len(r.joelNotes or ''),
             )
 
-        # Prefer most recent generated report that actually has notes;
-        # fall back to most recent generated report regardless.
-        if not latest_generated or not latest_generated.joelNotes:
-            latest_generated = next(
-                (r for r in real_reports if r.source == 'generated' and r.joelNotes),
-                latest_generated,
-            )
         if latest_generated and latest_generated.joelNotes:
             joel_notes = latest_generated.joelNotes
-            logging.info(
-                'dashboard context: selected report id=%s generatedAt=%s',
-                latest_generated.id, latest_generated.generatedAt.isoformat(),
-            )
     except Exception as exc:
         logging.warning('Report lookup failed: %s', exc)
 

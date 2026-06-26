@@ -23,7 +23,7 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         if customer is None:
             return _json({'error': f'Customer {customer_id!r} not found'}, 404)
 
-        # Determine the reporting period from trend data
+        # Reporting period from trend data
         all_trends = cosmos_client.list_trends(customer_id)
         if not all_trends:
             return _json({'error': 'No trend data found for this customer'}, 404)
@@ -33,7 +33,43 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         prev_year = latest_year if latest_month > 1 else latest_year - 1
         prev_month = latest_month - 1 if latest_month > 1 else 12
 
-        # Walk all reports and identify which ones were selected
+        # ── Raw debug: most recent docs with context fields (by _ts DESC) ──────
+        # since_ts = 1750000000 ≈ June 2025 — catches all recent documents
+        raw_docs = cosmos_client.get_recent_raw(customer_id, since_ts=1750000000, limit=10)
+
+        # ── Use _ts-ordered query to pick the most recently WRITTEN report with notes
+        context_reports = cosmos_client.get_reports_with_context(customer_id, limit=10)
+
+        logging.info(
+            'dashboard_context: %d reports with context found via _ts query for %s',
+            len(context_reports), customer_id,
+        )
+        for r in context_reports[:5]:
+            logging.info(
+                '  _ts candidate: id=%s source=%s month=%s/%s generatedAt=%s notes_len=%d',
+                r.id, r.source, r.month, r.year,
+                r.generatedAt.isoformat(), len(r.joelNotes or ''),
+            )
+
+        # Latest generated report with notes — first hit from _ts DESC query
+        latest_generated = next(
+            (r for r in context_reports if r.source == 'generated' and r.joelNotes),
+            None,
+        )
+
+        # Fall back to list_reports if nothing came back from context query
+        if latest_generated is None:
+            all_reports = cosmos_client.list_reports(customer_id)
+            real_reports = [r for r in all_reports if r.source not in (_CACHE_SRC, None)]
+            latest_generated = next(
+                (r for r in real_reports if r.source == 'generated' and r.joelNotes),
+                None,
+            ) or next(
+                (r for r in real_reports if r.source == 'generated'),
+                None,
+            )
+
+        # Import reports still come from list_reports (month/year match matters there)
         all_reports = cosmos_client.list_reports(customer_id)
         real_reports = [r for r in all_reports if r.source not in (_CACHE_SRC, None)]
 
@@ -45,13 +81,6 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         imported_prev = next(
             (r for r in real_reports
              if r.source == 'manual_import' and r.year == prev_year and r.month == prev_month),
-            None,
-        )
-        latest_generated = next(
-            (r for r in real_reports if r.source == 'generated' and r.joelNotes),
-            None,
-        ) or next(
-            (r for r in real_reports if r.source == 'generated'),
             None,
         )
 
@@ -68,7 +97,6 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
 
         ed_prev = imported_prev.extractedData if imported_prev and imported_prev.extractedData else {}
         ed_curr = imported_curr.extractedData if imported_curr and imported_curr.extractedData else {}
-
         joel_notes = (latest_generated.joelNotes or '') if latest_generated else ''
 
         return _json({
@@ -92,6 +120,10 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
                 'projectUpdates': ed_prev.get('projectUpdates') or [],
                 'progressNarrative': ed_prev.get('progressNarrative') or '',
                 'realizedSavings': ed_curr.get('realizedSavings', 0.0),
+            },
+            'debug': {
+                'contextQueryHits': len(context_reports),
+                'recentRawDocs': raw_docs,
             },
         })
 

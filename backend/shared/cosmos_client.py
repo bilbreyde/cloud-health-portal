@@ -1,9 +1,15 @@
 import os
+from datetime import timezone
 from typing import Optional
 
 from azure.cosmos import CosmosClient, PartitionKey, exceptions
 
 from .models import Customer, ExceptionRecord, Report, Template, TrendData, Upload
+
+
+def _utc(dt):
+    """Normalize datetime to UTC-aware for safe comparison."""
+    return dt if (dt is None or dt.tzinfo is not None) else dt.replace(tzinfo=timezone.utc)
 
 _DB_NAME = "cloud-health-portal"
 _CONTAINERS = {
@@ -194,7 +200,7 @@ def list_reports(customer_id: str, year: Optional[int] = None) -> list[Report]:
     query = f"SELECT * FROM c WHERE {' AND '.join(filters)}"
     items = container.query_items(query=query, parameters=params, partition_key=customer_id)
     results = [Report.from_dict(i) for i in items]
-    return sorted(results, key=lambda r: (r.year, r.month, r.generatedAt), reverse=True)
+    return sorted(results, key=lambda r: (r.year, r.month, _utc(r.generatedAt)), reverse=True)
 
 
 def update_report(report: Report) -> Report:
@@ -206,6 +212,59 @@ def update_report(report: Report) -> Report:
 def delete_report(report_id: str, customer_id: str) -> None:
     container = _get_container("reports")
     container.delete_item(item=report_id, partition_key=customer_id)
+
+
+def get_reports_with_context(customer_id: str, limit: int = 10) -> list[Report]:
+    """Most-recent reports that have joelNotes or extractedData, ordered by Cosmos _ts DESC.
+
+    Uses _ts (Cosmos system write-timestamp) rather than the application-level
+    generatedAt field so ordering is guaranteed regardless of reporting period.
+    Cross-partition enabled so ORDER BY works reliably.
+    """
+    container = _get_container("reports")
+    query = f"""
+        SELECT * FROM c
+        WHERE c.customerId = @customerId
+        AND (
+            (IS_DEFINED(c.joelNotes) AND c.joelNotes != null AND c.joelNotes != "")
+            OR
+            (IS_DEFINED(c.extractedData) AND c.extractedData != null)
+        )
+        ORDER BY c._ts DESC
+        OFFSET 0 LIMIT {limit}
+    """
+    items = container.query_items(
+        query=query,
+        parameters=[{"name": "@customerId", "value": customer_id}],
+        enable_cross_partition_query=True,
+    )
+    return [Report.from_dict(i) for i in items]
+
+
+def get_recent_raw(customer_id: str, since_ts: int = 1750000000, limit: int = 10) -> list[dict]:
+    """Raw Cosmos docs for debugging — exposes actual field names and _ts values."""
+    container = _get_container("reports")
+    query = f"""
+        SELECT c.id, c.source, c.month, c.year, c.status,
+               c.generatedAt, c._ts,
+               IS_DEFINED(c.joelNotes) AS hasJoelNotesField,
+               LENGTH(c.joelNotes) AS joelNotesLen,
+               IS_DEFINED(c.extractedData) AS hasExtractedData
+        FROM c
+        WHERE c.customerId = @customerId
+        AND c._ts > @since_ts
+        ORDER BY c._ts DESC
+        OFFSET 0 LIMIT {limit}
+    """
+    items = container.query_items(
+        query=query,
+        parameters=[
+            {"name": "@customerId", "value": customer_id},
+            {"name": "@since_ts", "value": since_ts},
+        ],
+        enable_cross_partition_query=True,
+    )
+    return list(items)
 
 
 # ── templates ─────────────────────────────────────────────────────────────────
