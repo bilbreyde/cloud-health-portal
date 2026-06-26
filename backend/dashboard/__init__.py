@@ -63,7 +63,10 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         return _json({'error': 'customerId is required'}, 400)
     try:
         if req.method == 'GET':
-            force = req.params.get('force', '').lower() == 'true'
+            force = (
+                req.params.get('force', '').lower() == 'true'
+                or req.params.get('bust', '').lower() == 'true'
+            )
             return _handle_get(customer_id, force)
         if req.method == 'PATCH':
             return _handle_patch(req, customer_id)
@@ -166,6 +169,18 @@ def _handle_get(customer_id: str, force: bool) -> func.HttpResponse:
             except Exception:
                 prev_report_label = f'{imported_prev.month}/{imported_prev.year}'
 
+        # Debug: log all generated reports with notes so context selection is traceable
+        with_notes = [r for r in real_reports if r.source == 'generated' and r.joelNotes]
+        logging.info(
+            'dashboard context: %d generated reports with joelNotes for customer %s',
+            len(with_notes), customer_id,
+        )
+        for r in with_notes[:10]:
+            logging.info(
+                '  candidate report id=%s generatedAt=%s notes_len=%d',
+                r.id, r.generatedAt.isoformat(), len(r.joelNotes or ''),
+            )
+
         # Prefer most recent generated report that actually has notes;
         # fall back to most recent generated report regardless.
         if not latest_generated or not latest_generated.joelNotes:
@@ -175,6 +190,10 @@ def _handle_get(customer_id: str, force: bool) -> func.HttpResponse:
             )
         if latest_generated and latest_generated.joelNotes:
             joel_notes = latest_generated.joelNotes
+            logging.info(
+                'dashboard context: selected report id=%s generatedAt=%s',
+                latest_generated.id, latest_generated.generatedAt.isoformat(),
+            )
     except Exception as exc:
         logging.warning('Report lookup failed: %s', exc)
 
