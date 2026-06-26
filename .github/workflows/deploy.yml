@@ -112,23 +112,33 @@ jobs:
           cd backend
           func azure functionapp publish ${{ needs.deploy-infra.outputs.functionAppName }} --python
 
-      - name: Ensure CORS settings
+      - name: Lock in CORS permanently
         run: |
+          az functionapp cors remove \
+            --subscription ${{ secrets.AZURE_SUBSCRIPTION_ID }} \
+            --resource-group ${{ env.RESOURCE_GROUP }} \
+            --name chp-dev-func \
+            --allowed-origins '*' || true
           az functionapp cors add \
             --subscription ${{ secrets.AZURE_SUBSCRIPTION_ID }} \
             --resource-group ${{ env.RESOURCE_GROUP }} \
-            --name ${{ needs.deploy-infra.outputs.functionAppName }} \
+            --name chp-dev-func \
             --allowed-origins "https://red-sand-05177ba0f.7.azurestaticapps.net"
           az functionapp cors add \
             --subscription ${{ secrets.AZURE_SUBSCRIPTION_ID }} \
             --resource-group ${{ env.RESOURCE_GROUP }} \
-            --name ${{ needs.deploy-infra.outputs.functionAppName }} \
+            --name chp-dev-func \
             --allowed-origins "http://localhost:5173"
           az functionapp cors add \
             --subscription ${{ secrets.AZURE_SUBSCRIPTION_ID }} \
             --resource-group ${{ env.RESOURCE_GROUP }} \
-            --name ${{ needs.deploy-infra.outputs.functionAppName }} \
+            --name chp-dev-func \
             --allowed-origins "https://localhost:5173"
+          echo "CORS configured:"
+          az functionapp cors show \
+            --subscription ${{ secrets.AZURE_SUBSCRIPTION_ID }} \
+            --resource-group ${{ env.RESOURCE_GROUP }} \
+            --name chp-dev-func
 
   # ── Job 3: Build frontend + deploy to Static Web App ─────────────────────────
   deploy-frontend:
