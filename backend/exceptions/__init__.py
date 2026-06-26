@@ -1,4 +1,3 @@
-import json
 import logging
 import math
 import uuid
@@ -10,10 +9,7 @@ import pandas as pd
 
 from shared import cosmos_client
 from shared.models import ExceptionRecord, derive_exception_category
-
-
-def _json(body, status: int = 200) -> func.HttpResponse:
-    return func.HttpResponse(json.dumps(body), status_code=status, mimetype='application/json')
+from shared.response_helpers import CORS_HEADERS, cors_options, cors_response
 
 
 def _clean_str(v, default: str = '') -> str:
@@ -70,12 +66,12 @@ def _row_to_exception(row: dict, customer_id: str, now: datetime) -> ExceptionRe
 
 def _handle_list(customer_id: str) -> func.HttpResponse:
     exc_list = cosmos_client.list_exceptions(customer_id)
-    return _json([e.to_dict() for e in exc_list])
+    return cors_response([e.to_dict() for e in exc_list])
 
 
 def _handle_summary(customer_id: str) -> func.HttpResponse:
     summary = cosmos_client.exceptions_summary(customer_id)
-    return _json(summary)
+    return cors_response(summary)
 
 
 def _handle_import(req: func.HttpRequest, customer_id: str) -> func.HttpResponse:
@@ -96,9 +92,9 @@ def _handle_import(req: func.HttpRequest, customer_id: str) -> func.HttpResponse
         try:
             rows = req.get_json()
             if not isinstance(rows, list):
-                return _json({'error': 'Expected a JSON array or multipart file'}, 400)
+                return cors_response({'error': 'Expected a JSON array or multipart file'}, 400)
         except ValueError:
-            return _json({'error': 'Request must be multipart file upload or JSON array'}, 400)
+            return cors_response({'error': 'Request must be multipart file upload or JSON array'}, 400)
 
     upserted = 0
     errors = []
@@ -110,18 +106,18 @@ def _handle_import(req: func.HttpRequest, customer_id: str) -> func.HttpResponse
         except Exception as e:
             errors.append({'row': i, 'error': str(e)})
 
-    return _json({'imported': upserted, 'errors': errors}, 200)
+    return cors_response({'imported': upserted, 'errors': errors}, 200)
 
 
 def _handle_put(req: func.HttpRequest, customer_id: str, exception_id: str) -> func.HttpResponse:
     try:
         body = req.get_json()
     except ValueError:
-        return _json({'error': 'Request body must be valid JSON'}, 400)
+        return cors_response({'error': 'Request body must be valid JSON'}, 400)
 
     exc = cosmos_client.get_exception(exception_id, customer_id)
     if exc is None:
-        return _json({'error': f'Exception {exception_id!r} not found'}, 404)
+        return cors_response({'error': f'Exception {exception_id!r} not found'}, 404)
 
     if 'notes' in body:
         exc.notes = (body['notes'] or '').strip()
@@ -130,15 +126,15 @@ def _handle_put(req: func.HttpRequest, customer_id: str, exception_id: str) -> f
     exc.updatedAt = datetime.now(timezone.utc)
 
     cosmos_client.upsert_exception(exc)
-    return _json(exc.to_dict())
+    return cors_response(exc.to_dict())
 
 
 def _handle_delete(customer_id: str, exception_id: str) -> func.HttpResponse:
     exc = cosmos_client.get_exception(exception_id, customer_id)
     if exc is None:
-        return _json({'error': f'Exception {exception_id!r} not found'}, 404)
+        return cors_response({'error': f'Exception {exception_id!r} not found'}, 404)
     cosmos_client.delete_exception(exception_id, customer_id)
-    return func.HttpResponse(status_code=204)
+    return func.HttpResponse(status_code=204, headers=CORS_HEADERS)
 
 
 def main(req: func.HttpRequest) -> func.HttpResponse:
@@ -146,8 +142,10 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
     customer_id = (req.route_params.get('customerId') or '').strip()
     action = (req.route_params.get('action') or '').strip()
 
+    if req.method == 'OPTIONS':
+        return cors_options()
     if not customer_id:
-        return _json({'error': 'customerId is required'}, 400)
+        return cors_response({'error': 'customerId is required'}, 400)
 
     try:
         method = req.method.upper()
@@ -163,8 +161,8 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         if method == 'DELETE' and action:
             return _handle_delete(customer_id, action)
 
-        return _json({'error': f'Unrecognised route: {method} /exceptions/{customer_id}/{action}'}, 404)
+        return cors_response({'error': f'Unrecognised route: {method} /exceptions/{customer_id}/{action}'}, 404)
 
     except Exception as exc:
         logging.exception('exceptions unhandled error')
-        return _json({'error': str(exc)}, 500)
+        return cors_response({'error': str(exc)}, 500)

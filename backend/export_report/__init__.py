@@ -11,16 +11,13 @@ from docx.oxml.ns import qn
 from docx.shared import Inches, Pt, RGBColor
 
 from shared import blob_client, cosmos_client
+from shared.response_helpers import CORS_HEADERS, cors_options, cors_response
 from shared.trend_engine import compute_mom_delta
 
 _BLUE = RGBColor(0x17, 0x5E, 0x8C)
 _GREY = RGBColor(0x60, 0x60, 0x60)
 _TABLE_HDR_FILL = 'D5E8F0'
 _FONT = 'Calibri'
-
-
-def _json(body, status: int = 200) -> func.HttpResponse:
-    return func.HttpResponse(json.dumps(body), status_code=status, mimetype='application/json')
 
 
 def _prev_month(month: int, year: int):
@@ -432,30 +429,32 @@ def _build_docx(
 
 def main(req: func.HttpRequest) -> func.HttpResponse:
     logging.info('export_report triggered')
+    if req.method == 'OPTIONS':
+        return cors_options()
     try:
         body = req.get_json()
     except ValueError:
-        return _json({'error': 'Request body must be valid JSON'}, 400)
+        return cors_response({'error': 'Request body must be valid JSON'}, 400)
 
     customer_id = (body.get('customerId') or '').strip()
     month       = body.get('month')
     year        = body.get('year')
 
     if not customer_id:
-        return _json({'error': 'customerId is required'}, 400)
+        return cors_response({'error': 'customerId is required'}, 400)
     if not isinstance(month, int) or not isinstance(year, int):
-        return _json({'error': 'month and year must be integers'}, 400)
+        return cors_response({'error': 'month and year must be integers'}, 400)
     if not 1 <= month <= 12:
-        return _json({'error': 'month must be 1-12'}, 400)
+        return cors_response({'error': 'month must be 1-12'}, 400)
 
     customer = cosmos_client.get_customer(customer_id)
     if customer is None:
-        return _json({'error': f'Customer {customer_id!r} not found'}, 404)
+        return cors_response({'error': f'Customer {customer_id!r} not found'}, 404)
 
     all_trends  = cosmos_client.list_trends(customer_id)
     curr_trends = [t for t in all_trends if t.year == year and t.month == month]
     if not curr_trends:
-        return _json(
+        return cors_response(
             {'error': f'No trend data found for {month}/{year}. Please upload CSVs for this period first.'},
             404,
         )
@@ -582,7 +581,7 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         )
     except Exception as exc:
         logging.exception('docx build failed')
-        return _json({'error': f'Document generation failed: {exc}'}, 500)
+        return cors_response({'error': f'Document generation failed: {exc}'}, 500)
 
     # ── Save to blob (best-effort) ─────────────────────────────────────────────
     safe_name = f'{customer.slug}_{year}_{month:02d}_report.docx'
@@ -596,6 +595,7 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         status_code=200,
         mimetype='application/vnd.openxmlformats-officedocument.wordprocessingml.document',
         headers={
+            'Access-Control-Allow-Origin': '*',
             'Content-Disposition': f'attachment; filename="{safe_name}"',
             'Content-Type': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
             'Access-Control-Expose-Headers': 'Content-Disposition',

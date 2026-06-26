@@ -1,4 +1,3 @@
-import json
 import logging
 import re
 import uuid
@@ -9,6 +8,7 @@ import azure.functions as func
 
 from shared import blob_client, cosmos_client
 from shared.models import Report
+from shared.response_helpers import cors_options, cors_response
 
 _DOLLAR_RE = re.compile(r'\$?\s*([\d,]+(?:\.\d{1,2})?)')
 _SECTION_RE = re.compile(r'^(?:Section\s+)?(\d+\.\d+)\b', re.IGNORECASE)
@@ -248,27 +248,24 @@ def _parse_docx(file_bytes: bytes) -> dict:
     return extracted
 
 
-def _json(body, status: int = 200) -> func.HttpResponse:
-    return func.HttpResponse(json.dumps(body), status_code=status, mimetype='application/json')
-
-
 def main(req: func.HttpRequest) -> func.HttpResponse:
     logging.info('import_report triggered')
     customer_id = (req.route_params.get('customerId') or '').strip()
     if not customer_id:
-        return _json({'error': 'customerId is required'}, 400)
-
+        return cors_response({'error': 'customerId is required'}, 400)
+    if req.method == 'OPTIONS':
+        return cors_options()
     try:
         return _handle(req, customer_id)
     except Exception as exc:
         logging.exception('import_report unhandled error')
-        return _json({'error': str(exc)}, 500)
+        return cors_response({'error': str(exc)}, 500)
 
 
 def _handle(req: func.HttpRequest, customer_id: str) -> func.HttpResponse:
     customer = cosmos_client.get_customer(customer_id)
     if customer is None:
-        return _json({'error': f'Customer {customer_id!r} not found'}, 404)
+        return cors_response({'error': f'Customer {customer_id!r} not found'}, 404)
 
     def field(name: str) -> str:
         return (req.params.get(name) or req.form.get(name, '')).strip()
@@ -278,22 +275,22 @@ def _handle(req: func.HttpRequest, customer_id: str) -> func.HttpResponse:
     field('reportDate')
 
     if not month_str or not year_str:
-        return _json({'error': 'month and year are required'}, 400)
+        return cors_response({'error': 'month and year are required'}, 400)
     try:
         month = int(month_str)
         year  = int(year_str)
     except ValueError:
-        return _json({'error': 'month and year must be integers'}, 400)
+        return cors_response({'error': 'month and year must be integers'}, 400)
     if not 1 <= month <= 12:
-        return _json({'error': 'month must be 1–12'}, 400)
+        return cors_response({'error': 'month must be 1–12'}, 400)
 
     uploaded = req.files.get('file')
     if uploaded is None:
-        return _json({'error': 'multipart field "file" is required'}, 400)
+        return cors_response({'error': 'multipart field "file" is required'}, 400)
 
     filename = uploaded.filename or 'report.docx'
     if not filename.lower().endswith('.docx'):
-        return _json({'error': 'Only .docx files are supported'}, 400)
+        return cors_response({'error': 'Only .docx files are supported'}, 400)
 
     file_bytes = uploaded.read()
 
@@ -338,7 +335,7 @@ def _handle(req: func.HttpRequest, customer_id: str) -> func.HttpResponse:
         len(extracted_data['ongoingNextSteps']),
     )
 
-    return _json({
+    return cors_response({
         'success': True,
         'reportId': report_id,
         'extractedData': extracted_data,

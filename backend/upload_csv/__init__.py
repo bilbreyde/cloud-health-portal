@@ -1,4 +1,3 @@
-import json
 import logging
 import uuid
 from datetime import date, datetime, timezone
@@ -9,20 +8,19 @@ import pandas as pd
 
 from shared import blob_client, cosmos_client
 from shared.models import TrendData, Upload
+from shared.response_helpers import cors_options, cors_response
 from shared.trend_engine import aggregate_csv, detect_service_type, normalize_filename_to_key
-
-
-def _json(body: dict, status: int = 200) -> func.HttpResponse:
-    return func.HttpResponse(json.dumps(body), status_code=status, mimetype='application/json')
 
 
 def main(req: func.HttpRequest) -> func.HttpResponse:
     logging.info('upload_csv triggered')
+    if req.method == 'OPTIONS':
+        return cors_options()
     try:
         return _handle(req)
     except Exception as exc:
         logging.exception('upload_csv unhandled error')
-        return _json({'error': str(exc)}, 500)
+        return cors_response({'error': str(exc)}, 500)
 
 
 def _handle(req: func.HttpRequest) -> func.HttpResponse:
@@ -37,30 +35,30 @@ def _handle(req: func.HttpRequest) -> func.HttpResponse:
     snapshot_date_str = field('snapshotDate') or date.today().isoformat()
 
     if not customer_id:
-        return _json({'error': 'customerId is required'}, 400)
+        return cors_response({'error': 'customerId is required'}, 400)
     if not month_str or not year_str:
-        return _json({'error': 'month and year are required'}, 400)
+        return cors_response({'error': 'month and year are required'}, 400)
 
     try:
         month = int(month_str)
         year = int(year_str)
     except ValueError:
-        return _json({'error': 'month and year must be integers'}, 400)
+        return cors_response({'error': 'month and year must be integers'}, 400)
 
     if not 1 <= month <= 12:
-        return _json({'error': 'month must be 1–12'}, 400)
+        return cors_response({'error': 'month must be 1–12'}, 400)
     if year < 2026:
-        return _json({'error': 'year must be 2026 or later'}, 400)
+        return cors_response({'error': 'year must be 2026 or later'}, 400)
 
     try:
         date.fromisoformat(snapshot_date_str)
     except ValueError:
-        return _json({'error': 'snapshotDate must be YYYY-MM-DD'}, 400)
+        return cors_response({'error': 'snapshotDate must be YYYY-MM-DD'}, 400)
 
     # ── File ───────────────────────────────────────────────────────────────────
     uploaded = req.files.get('file')
     if uploaded is None:
-        return _json({'error': 'multipart field "file" is required'}, 400)
+        return cors_response({'error': 'multipart field "file" is required'}, 400)
 
     filename = uploaded.filename
     file_bytes = uploaded.read()
@@ -68,16 +66,16 @@ def _handle(req: func.HttpRequest) -> func.HttpResponse:
     # ── Customer validation ────────────────────────────────────────────────────
     customer = cosmos_client.get_customer(customer_id)
     if customer is None:
-        return _json({'error': f'Customer {customer_id!r} not found'}, 404)
+        return cors_response({'error': f'Customer {customer_id!r} not found'}, 404)
 
     # ── Parse CSV ──────────────────────────────────────────────────────────────
     try:
         df = pd.read_csv(BytesIO(file_bytes))
     except Exception as exc:
-        return _json({'error': f'Could not parse CSV: {exc}'}, 422)
+        return cors_response({'error': f'Could not parse CSV: {exc}'}, 422)
 
     if df.empty:
-        return _json({'error': 'CSV contains no data rows'}, 422)
+        return cors_response({'error': 'CSV contains no data rows'}, 422)
 
     # ── Detect service & aggregate ─────────────────────────────────────────────
     service_type = service_type_hint or detect_service_type(filename, list(df.columns))
@@ -128,7 +126,7 @@ def _handle(req: func.HttpRequest) -> func.HttpResponse:
     )
     cosmos_client.upsert_trend(trend)
 
-    return _json({
+    return cors_response({
         'success': True,
         'uploadId': upload_id,
         'serviceType': service_type,

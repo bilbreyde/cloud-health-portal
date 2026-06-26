@@ -10,11 +10,8 @@ from openai import AzureOpenAI
 
 from shared import cosmos_client
 from shared.models import Report
+from shared.response_helpers import cors_options, cors_response
 from shared.trend_engine import SMALL_DELTA_ABS, compute_mom_delta
-
-
-def _json(body: dict, status: int = 200) -> func.HttpResponse:
-    return func.HttpResponse(json.dumps(body), status_code=status, mimetype='application/json')
 
 
 def _prev_month(month: int, year: int):
@@ -177,12 +174,14 @@ Return only the JSON object. No markdown fences, no extra keys.""")
 
 def main(req: func.HttpRequest) -> func.HttpResponse:
     logging.info('build_report triggered')
+    if req.method == 'OPTIONS':
+        return cors_options()
     step = 'parsing request body'
 
     try:
         body = req.get_json()
     except ValueError:
-        return _json({'error': 'Request body must be valid JSON'}, 400)
+        return cors_response({'error': 'Request body must be valid JSON'}, 400)
 
     customer_id = (body.get('customerId') or '').strip()
     month       = body.get('month')
@@ -190,11 +189,11 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
     joel_notes  = (body.get('joelNotes') or '').strip()
 
     if not customer_id:
-        return _json({'error': 'customerId is required'}, 400)
+        return cors_response({'error': 'customerId is required'}, 400)
     if not isinstance(month, int) or not isinstance(year, int):
-        return _json({'error': 'month and year must be integers'}, 400)
+        return cors_response({'error': 'month and year must be integers'}, 400)
     if not 1 <= month <= 12:
-        return _json({'error': 'month must be 1-12'}, 400)
+        return cors_response({'error': 'month must be 1-12'}, 400)
 
     try:
         # ── Step 1: Validate customer ─────────────────────────────────────────
@@ -202,7 +201,7 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         logging.info('Step 1: Validating customer %s', customer_id)
         customer = cosmos_client.get_customer(customer_id)
         if customer is None:
-            return _json({'error': f'Customer {customer_id!r} not found'}, 404)
+            return cors_response({'error': f'Customer {customer_id!r} not found'}, 404)
         logging.info('Step 1 done: customer=%s', customer.name)
 
         # ── Step 2: Fetch trend data ──────────────────────────────────────────
@@ -211,7 +210,7 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         all_trends = cosmos_client.list_trends(customer_id)
         curr_trends = [t for t in all_trends if t.year == year and t.month == month]
         if not curr_trends:
-            return _json(
+            return cors_response(
                 {'error': f'No trend data found for {month}/{year}. Please upload CSVs for this period first.'},
                 404,
             )
@@ -364,7 +363,7 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
             narrative = json.loads(raw)
         except Exception as exc:
             logging.error('Step 6 FAILED — AI call error: %s\n%s', exc, traceback.format_exc())
-            return _json({
+            return cors_response({
                 'error': f'AI generation failed: {exc}',
                 'step': step,
             }, 500)
@@ -391,7 +390,7 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
     except Exception as exc:
         tb = traceback.format_exc()
         logging.error('build_report FAILED at step=%r: %s\n%s', step, exc, tb)
-        return _json({
+        return cors_response({
             'error': f'Failed at step "{step}": {exc}',
             'step': step,
             'traceback': tb,
@@ -400,7 +399,7 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
     exc_floor    = exception_summary['totalMonthlyCost'] if exception_summary else 0.0
     total_signal = sum(curr_data.values())
 
-    return _json({
+    return cors_response({
         'success': True,
         'reportId': report_id,
         'narrativeDraft': narrative,

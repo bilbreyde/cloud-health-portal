@@ -8,13 +8,10 @@ from openai import AzureOpenAI
 
 from shared import cosmos_client
 from shared.models import Report
+from shared.response_helpers import cors_options, cors_response
 
 _CACHE_TTL_HOURS = 24
 _CACHE_SRC = 'dashboard_narrative'
-
-
-def _json(body, status: int = 200) -> func.HttpResponse:
-    return func.HttpResponse(json.dumps(body), status_code=status, mimetype='application/json')
 
 
 def _cache_id(customer_id: str) -> str:
@@ -60,7 +57,9 @@ def _save_cache(customer_id: str, narrative: dict, data_snapshot: dict,
 def main(req: func.HttpRequest) -> func.HttpResponse:
     customer_id = (req.route_params.get('customerId') or '').strip()
     if not customer_id:
-        return _json({'error': 'customerId is required'}, 400)
+        return cors_response({'error': 'customerId is required'}, 400)
+    if req.method == 'OPTIONS':
+        return cors_options()
     try:
         if req.method == 'GET':
             force = (
@@ -70,16 +69,16 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
             return _handle_get(customer_id, force)
         if req.method == 'PATCH':
             return _handle_patch(req, customer_id)
-        return _json({'error': 'Method not allowed'}, 405)
+        return cors_response({'error': 'Method not allowed'}, 405)
     except Exception as exc:
         logging.exception('dashboard unhandled error')
-        return _json({'error': str(exc)}, 500)
+        return cors_response({'error': str(exc)}, 500)
 
 
 def _handle_get(customer_id: str, force: bool) -> func.HttpResponse:
     customer = cosmos_client.get_customer(customer_id)
     if customer is None:
-        return _json({'error': f'Customer {customer_id!r} not found'}, 404)
+        return cors_response({'error': f'Customer {customer_id!r} not found'}, 404)
 
     if not force:
         cached = _get_cache(customer_id)
@@ -89,7 +88,7 @@ def _handle_get(customer_id: str, force: bool) -> func.HttpResponse:
             gen_at = cached.generatedAt
             if gen_at.tzinfo is None:
                 gen_at = gen_at.replace(tzinfo=timezone.utc)
-            return _json({
+            return cors_response({
                 'narrative': narrative,
                 'generatedAt': gen_at.isoformat(),
                 'dataSnapshot': ext.get('dataSnapshot', {}),
@@ -101,7 +100,7 @@ def _handle_get(customer_id: str, force: bool) -> func.HttpResponse:
     # ── Gather trend data ──────────────────────────────────────────────────────
     all_trends = cosmos_client.list_trends(customer_id)
     if not all_trends:
-        return _json({'error': 'No trend data found for this customer'}, 404)
+        return cors_response({'error': 'No trend data found for this customer'}, 404)
 
     latest_year = all_trends[0].year
     latest_month = all_trends[0].month
@@ -324,7 +323,7 @@ Return only the JSON object. No markdown fences.""")
     now_utc = datetime.now(timezone.utc)
     _save_cache(customer_id, narrative, data_snapshot, prev_next_steps, existing_commitments)
 
-    return _json({
+    return cors_response({
         'narrative': narrative,
         'generatedAt': now_utc.isoformat(),
         'dataSnapshot': data_snapshot,
@@ -338,14 +337,14 @@ def _handle_patch(req: func.HttpRequest, customer_id: str) -> func.HttpResponse:
     try:
         body = req.get_json()
     except ValueError:
-        return _json({'error': 'Request body must be valid JSON'}, 400)
+        return cors_response({'error': 'Request body must be valid JSON'}, 400)
 
     commitment_key = str(body.get('commitmentKey', ''))
     checked = bool(body.get('checked', False))
 
     cached = cosmos_client.get_report(_cache_id(customer_id), customer_id)
     if cached is None:
-        return _json({'error': 'No dashboard narrative cache found. Generate one first.'}, 404)
+        return cors_response({'error': 'No dashboard narrative cache found. Generate one first.'}, 404)
 
     ext = cached.extractedData or {}
     commitments = ext.get('commitments', {})
@@ -354,4 +353,4 @@ def _handle_patch(req: func.HttpRequest, customer_id: str) -> func.HttpResponse:
     cached.extractedData = ext
     cosmos_client.update_report(cached)
 
-    return _json({'success': True, 'commitments': commitments})
+    return cors_response({'success': True, 'commitments': commitments})

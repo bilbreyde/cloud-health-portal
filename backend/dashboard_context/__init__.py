@@ -1,32 +1,30 @@
-import json
 import logging
 from datetime import datetime
 
 import azure.functions as func
 
 from shared import cosmos_client
+from shared.response_helpers import cors_options, cors_response
 
 _CACHE_SRC = 'dashboard_narrative'
-
-
-def _json(body, status: int = 200) -> func.HttpResponse:
-    return func.HttpResponse(json.dumps(body), status_code=status, mimetype='application/json')
 
 
 def main(req: func.HttpRequest) -> func.HttpResponse:
     customer_id = (req.route_params.get('customerId') or '').strip()
     if not customer_id:
-        return _json({'error': 'customerId is required'}, 400)
+        return cors_response({'error': 'customerId is required'}, 400)
+    if req.method == 'OPTIONS':
+        return cors_options()
 
     try:
         customer = cosmos_client.get_customer(customer_id)
         if customer is None:
-            return _json({'error': f'Customer {customer_id!r} not found'}, 404)
+            return cors_response({'error': f'Customer {customer_id!r} not found'}, 404)
 
         # Reporting period from trend data
         all_trends = cosmos_client.list_trends(customer_id)
         if not all_trends:
-            return _json({'error': 'No trend data found for this customer'}, 404)
+            return cors_response({'error': 'No trend data found for this customer'}, 404)
 
         latest_year = all_trends[0].year
         latest_month = all_trends[0].month
@@ -99,7 +97,7 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         ed_curr = imported_curr.extractedData if imported_curr and imported_curr.extractedData else {}
         joel_notes = (latest_generated.joelNotes or '') if latest_generated else ''
 
-        return _json({
+        return cors_response({
             'customerId': customer_id,
             'customerName': customer.name,
             'reportingPeriod': {
@@ -129,4 +127,4 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
 
     except Exception as exc:
         logging.exception('dashboard_context unhandled error')
-        return _json({'error': str(exc)}, 500)
+        return cors_response({'error': str(exc)}, 500)

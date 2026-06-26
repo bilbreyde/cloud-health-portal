@@ -1,4 +1,3 @@
-import json
 import logging
 from collections import defaultdict
 from datetime import date
@@ -7,14 +6,11 @@ from typing import Dict, List, Tuple
 import azure.functions as func
 
 from shared import cosmos_client
+from shared.response_helpers import cors_options, cors_response
 from shared.trend_engine import SMALL_DELTA_ABS, compute_mom_delta
 
 MONTH_NAMES = ['jan', 'feb', 'mar', 'apr', 'may', 'jun',
                'jul', 'aug', 'sep', 'oct', 'nov', 'dec']
-
-
-def _json(body: dict, status: int = 200) -> func.HttpResponse:
-    return func.HttpResponse(json.dumps(body), status_code=status, mimetype='application/json')
 
 
 def _int_param(req: func.HttpRequest, name: str, default: int) -> int:
@@ -24,17 +20,19 @@ def _int_param(req: func.HttpRequest, name: str, default: int) -> int:
 
 def main(req: func.HttpRequest) -> func.HttpResponse:
     logging.info('run_trends triggered')
+    if req.method == 'OPTIONS':
+        return cors_options()
     try:
         return _handle(req)
     except Exception as exc:
         logging.exception('run_trends unhandled error')
-        return _json({'error': str(exc)}, 500)
+        return cors_response({'error': str(exc)}, 500)
 
 
 def _handle(req: func.HttpRequest) -> func.HttpResponse:
     customer_id = req.route_params.get('customerId', '').strip()
     if not customer_id:
-        return _json({'error': 'customerId route parameter is required'}, 400)
+        return cors_response({'error': 'customerId route parameter is required'}, 400)
 
     today = date.today()
     try:
@@ -43,7 +41,7 @@ def _handle(req: func.HttpRequest) -> func.HttpResponse:
         end_month = _int_param(req, 'endMonth', today.month)
         end_year = _int_param(req, 'endYear', today.year)
     except ValueError:
-        return _json({'error': 'Date range parameters must be integers'}, 400)
+        return cors_response({'error': 'Date range parameters must be integers'}, 400)
 
     # ── Fetch & filter to requested date range ─────────────────────────────────
     all_trends = cosmos_client.list_trends(customer_id)
@@ -61,7 +59,7 @@ def _handle(req: func.HttpRequest) -> func.HttpResponse:
         'snapshots_detail': [],
     }
     if not trends:
-        return _json(empty)
+        return cors_response(empty)
 
     # ── snapshots_detail: every individual snapshot, chronological ─────────────
     snapshots_detail = sorted(
@@ -161,7 +159,7 @@ def _handle(req: func.HttpRequest) -> func.HttpResponse:
             'direction': direction,
         })
 
-    return _json({
+    return cors_response({
         'customerId': customer_id,
         'monthly_totals': monthly_totals,
         'top_movers_up': top_movers_up,
