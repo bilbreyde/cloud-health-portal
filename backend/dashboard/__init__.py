@@ -265,9 +265,21 @@ Return only the JSON object. No markdown fences.""")
                 {'role': 'system', 'content': (
                     'You are a senior cloud cost optimization consultant writing concise dashboard insights. '
                     'You have access to context from the previous report cycle — commitments, projects in flight, '
-                    'and the engagement manager\'s notes. This context is ground truth; weight it heavily. '
-                    'Explain signal movements using project context where relevant. '
-                    'Reference the planned savings pipeline and in-flight migrations by name when present.'
+                    'and the engagement manager\'s notes. This context is ground truth; weight it heavily.\n\n'
+                    'Hard rules:\n'
+                    '- Name each active project explicitly by its actual project name. '
+                    'Never refer generically to "a project" or "a migration" when a name is available.\n'
+                    '- If a project\'s status is listed (e.g. "pending vendor meeting", "awaiting PO approval", '
+                    '"in progress"), preserve that exact status in the narrative unless the signal data '
+                    'specifically indicates it has been completed.\n'
+                    '- If the engagement manager\'s notes name specific servers, reference those server names '
+                    'directly in the narrative.\n'
+                    '- NEVER write "no realized savings", "savings have not yet been realized", or any similar '
+                    'phrase if the engagement manager\'s notes describe confirmed actions or completed work. '
+                    'If notes confirm actions taken, acknowledge those as realized savings even if the '
+                    'CloudHealth signal has not yet caught up.\n'
+                    '- Explain signal movements using project context where relevant.\n'
+                    '- Reference the planned savings pipeline items by name when present.'
                 )},
                 {'role': 'user', 'content': '\n'.join(lines)},
             ],
