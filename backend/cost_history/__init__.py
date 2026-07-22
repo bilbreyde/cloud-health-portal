@@ -95,6 +95,13 @@ def _parse_cost_history_csv(file_bytes: bytes) -> dict:
         if not service_name or current_charge_type is None:
             continue
 
+        # A trailing "Total" row is the CSV's own grand total across every service in
+        # every section (verified against live data: its value equals netCost / 2 to
+        # the penny for 13/13 months, since it re-sums everything that came before it).
+        # It is not a service — importing it as one double-counts the whole month.
+        if service_name.strip().lower() == 'total':
+            continue
+
         services_seen.add(service_name)
         for month in month_cols:
             amount = _parse_amount(row.get(month))
@@ -136,6 +143,11 @@ def _handle_import(req: func.HttpRequest, customer_id: str) -> func.HttpResponse
         return cors_response({'error': 'No cost rows found in CSV'}, 422)
 
     now = datetime.now(timezone.utc)
+    # A CostHistory export is a full cumulative snapshot, not an incremental log —
+    # replace this customer's prior data outright so a re-import can't leave stale
+    # rows behind (e.g. from a parser bug that's since been fixed, like a
+    # "Total" row previously imported as if it were a real service).
+    deleted = cosmos_client.delete_cost_history_for_customer(customer_id)
     cosmos_client.upsert_cost_history_bulk(
         customer_id=customer_id,
         records=parsed['records'],
@@ -148,6 +160,7 @@ def _handle_import(req: func.HttpRequest, customer_id: str) -> func.HttpResponse
         'monthsImported': len(parsed['monthColumns']),
         'servicesImported': len(parsed['servicesSeen']),
         'totalRows': len(parsed['records']),
+        'previousRowsReplaced': deleted,
         'importedAt': now.isoformat(),
     })
 

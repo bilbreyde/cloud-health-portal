@@ -351,6 +351,9 @@ export default function Upload() {
             Imported {costResult.monthsImported} month{costResult.monthsImported !== 1 ? 's' : ''},{' '}
             {costResult.servicesImported} service{costResult.servicesImported !== 1 ? 's' : ''}
             {' '}({costResult.totalRows} rows) — last imported {new Date(costResult.importedAt).toLocaleString()}
+            {typeof costResult.previousRowsReplaced === 'number' && costResult.previousRowsReplaced > 0 && (
+              <> · replaced {costResult.previousRowsReplaced} previously imported rows</>
+            )}
           </div>
         )}
       </div>

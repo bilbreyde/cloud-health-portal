@@ -418,6 +418,28 @@ def upsert_cost_history(
 _BATCH_LIMIT = 100  # Cosmos transactional batch max operations per call
 
 
+def delete_cost_history_for_customer(customer_id: str) -> int:
+    """Delete every existing cost_history row for a customer.
+
+    Import is upsert-only, so it never removes rows that no longer appear in a
+    re-imported CSV — a fixed parser stops writing *new* bad rows but leaves
+    already-imported bad ones (e.g. a stale "Total" grand-total row mistaken for
+    a service) sitting in Cosmos forever. A CostHistory export is a full
+    cumulative snapshot, not an incremental log, so re-import should fully
+    replace prior data for that customer, not merge with it. Call this
+    immediately before upsert_cost_history_bulk on import. Returns the number
+    of rows deleted.
+    """
+    container = _get_container('cost_history')
+    existing = get_cost_history(customer_id, '0000-00', '9999-99')
+    ids = [r.id for r in existing]
+    for i in range(0, len(ids), _BATCH_LIMIT):
+        chunk = ids[i:i + _BATCH_LIMIT]
+        batch_ops = [('delete', (doc_id,)) for doc_id in chunk]
+        container.execute_item_batch(batch_ops, partition_key=customer_id)
+    return len(ids)
+
+
 def upsert_cost_history_bulk(
     customer_id: str,
     records: list,

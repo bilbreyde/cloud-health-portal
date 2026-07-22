@@ -191,6 +191,7 @@ export interface CostHistoryImportResult {
   monthsImported: number
   servicesImported: number
   totalRows: number
+  previousRowsReplaced?: number
   importedAt: string
   error?: string
 }
