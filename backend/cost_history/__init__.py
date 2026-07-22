@@ -1,7 +1,7 @@
 import logging
 import re
 from datetime import datetime, timezone
-from io import BytesIO
+from io import StringIO
 from typing import Optional
 
 import azure.functions as func
@@ -36,24 +36,32 @@ def _parse_amount(raw: str) -> Optional[float]:
 def _parse_cost_history_csv(file_bytes: bytes) -> dict:
     """Parse the CloudHealth-style CostHistory CSV into month columns + service rows.
 
-    Layout: row 0 is a "Sheet: Cost ($)" title row, row 1 holds column headers
-    (Subtotal, Service Items, <YYYY-MM>..., Total), followed by "Direct Charges (n)"
-    / "Indirect Charges (n)" section-header rows that switch the current charge
-    type for the service rows beneath them.
+    Layout: line 0 is a "Sheet: Cost ($)" title line (a single field, no commas),
+    line 1 is blank, line 2 holds the real column headers (Subtotal, Service Items,
+    <YYYY-MM>..., Total), followed by "Direct Charges (n)" / "Indirect Charges (n)"
+    section-header rows that switch the current charge type for the service rows
+    beneath them.
+
+    The title line has far fewer fields than every row after it, so handing the
+    whole file to pandas with header=None makes the C parser lock in the title
+    line's field count and raise a ParserError the moment it reaches the real
+    header row. Skip straight to the header line as plain text first, then let
+    pandas parse only the well-formed remainder.
     """
-    raw = pd.read_csv(BytesIO(file_bytes), header=None, dtype=str, keep_default_na=False)
+    content = file_bytes.decode('utf-8-sig')
+    lines = content.split('\n')
 
-    header_row_idx = None
-    for i in range(min(5, len(raw))):
-        row_vals = [str(v).strip().lower() for v in raw.iloc[i].tolist()]
-        if 'service items' in row_vals:
-            header_row_idx = i
-            break
-    if header_row_idx is None:
-        header_row_idx = 1 if len(raw) > 1 else 0
+    header_line_idx = next(
+        (i for i, line in enumerate(lines) if line.strip().lower().startswith('subtotal,')),
+        None,
+    )
+    if header_line_idx is None:
+        raise ValueError('Could not find header row (expected a line starting with "Subtotal,")')
 
-    col_names = [str(v).strip() for v in raw.iloc[header_row_idx].tolist()]
-    data = raw.iloc[header_row_idx + 1:].reset_index(drop=True)
+    csv_content = '\n'.join(lines[header_line_idx:])
+    data = pd.read_csv(StringIO(csv_content), dtype=str, keep_default_na=False)
+
+    col_names = [str(c).strip() for c in data.columns]
     data.columns = col_names
 
     lower_names = {c.lower(): c for c in col_names}
