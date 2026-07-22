@@ -30,9 +30,19 @@ _CONTAINERS = {
 _CUSTOMER_PARTITION_KEY = "/id"
 
 
+_client: Optional[CosmosClient] = None
+
+
 def _get_client() -> CosmosClient:
-    conn_str = os.environ["COSMOS_CONNECTION_STRING"]
-    return CosmosClient.from_connection_string(conn_str)
+    # Reuse a single client (and its connection pool) across calls instead of
+    # re-establishing a fresh Cosmos connection per call — the official SDK
+    # guidance, and the difference between a bulk import finishing in seconds
+    # vs. timing out on hundreds/thousands of individual writes.
+    global _client
+    if _client is None:
+        conn_str = os.environ["COSMOS_CONNECTION_STRING"]
+        _client = CosmosClient.from_connection_string(conn_str)
+    return _client
 
 
 def _get_container(name: str):
@@ -402,6 +412,54 @@ def upsert_cost_history(
     container = _get_container('cost_history')
     container.upsert_item(record.to_dict())
     return record
+
+
+_BATCH_LIMIT = 100  # Cosmos transactional batch max operations per call
+
+
+def upsert_cost_history_bulk(
+    customer_id: str,
+    records: list,
+    imported_at: Optional[datetime] = None,
+    source_file: str = '',
+) -> list[CostHistoryRecord]:
+    """Upsert many cost_history rows for one customer in one import.
+
+    A CostHistory CSV can produce thousands of (service, month) cells, and one
+    upsert_item call per cell — even with a reused client — is still one network
+    round trip per cell. Every row here shares the same customerId partition key,
+    so they're eligible for Cosmos transactional batches: up to 100 operations
+    per round trip instead of one, which is what keeps a large import inside the
+    Function App's request timeout instead of hitting a Gateway Timeout.
+
+    `records` is a list of dicts: {month, service, amount, chargeType}.
+    """
+    imported_at = imported_at or datetime.now(timezone.utc)
+    container = _get_container('cost_history')
+
+    built: list[CostHistoryRecord] = []
+    for rec in records:
+        doc_id = str(uuid.uuid5(
+            uuid.NAMESPACE_URL,
+            f"{customer_id}:{rec['month']}:{rec['chargeType']}:{rec['service']}",
+        ))
+        built.append(CostHistoryRecord(
+            id=doc_id,
+            customerId=customer_id,
+            month=rec['month'],
+            service=rec['service'],
+            amount=rec['amount'],
+            chargeType=rec['chargeType'],
+            importedAt=imported_at,
+            sourceFile=source_file,
+        ))
+
+    for i in range(0, len(built), _BATCH_LIMIT):
+        chunk = built[i:i + _BATCH_LIMIT]
+        batch_ops = [('upsert', (r.to_dict(),)) for r in chunk]
+        container.execute_item_batch(batch_ops, partition_key=customer_id)
+
+    return built
 
 
 def get_cost_history(customer_id: str, start_month: str, end_month: str) -> list[CostHistoryRecord]:

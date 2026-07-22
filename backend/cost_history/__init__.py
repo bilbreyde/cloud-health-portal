@@ -129,16 +129,12 @@ def _handle_import(req: func.HttpRequest, customer_id: str) -> func.HttpResponse
         return cors_response({'error': 'No cost rows found in CSV'}, 422)
 
     now = datetime.now(timezone.utc)
-    for rec in parsed['records']:
-        cosmos_client.upsert_cost_history(
-            customer_id=customer_id,
-            month=rec['month'],
-            service=rec['service'],
-            amount=rec['amount'],
-            charge_type=rec['chargeType'],
-            imported_at=now,
-            source_file=filename,
-        )
+    cosmos_client.upsert_cost_history_bulk(
+        customer_id=customer_id,
+        records=parsed['records'],
+        imported_at=now,
+        source_file=filename,
+    )
 
     return cors_response({
         'success': True,
