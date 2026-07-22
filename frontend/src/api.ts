@@ -1,4 +1,4 @@
-import type { Customer, DashboardNarrativeResponse, ExceptionRecord, ExceptionSummary, ImportReportResponse, Report, ReportResponse, TrendsResponse, UploadRecord, UploadResult } from './types'
+import type { CostHistoryImportResult, CostHistorySummary, Customer, DashboardNarrativeResponse, ExceptionRecord, ExceptionSummary, ImportReportResponse, Report, ReportResponse, TrendsResponse, UploadRecord, UploadResult } from './types'
 
 const BASE = (import.meta.env.VITE_API_URL ?? '') + '/api'
 
@@ -154,4 +154,22 @@ export function putException(
 
 export function deleteException(customerId: string, exceptionId: string): Promise<void> {
   return request<void>(`${BASE}/exceptions/${customerId}/${exceptionId}`, { method: 'DELETE' })
+}
+
+export function importCostHistory(customerId: string, formData: FormData): Promise<CostHistoryImportResult> {
+  return request<CostHistoryImportResult>(`${BASE}/cost-history/${customerId}/import`, {
+    method: 'POST',
+    body: formData,
+  })
+}
+
+export function fetchCostHistory(
+  customerId: string,
+  params?: { startMonth?: string; endMonth?: string },
+): Promise<CostHistorySummary> {
+  const qs = new URLSearchParams()
+  if (params?.startMonth) qs.set('startMonth', params.startMonth)
+  if (params?.endMonth) qs.set('endMonth', params.endMonth)
+  const suffix = qs.toString() ? `?${qs}` : ''
+  return request<CostHistorySummary>(`${BASE}/cost-history/${customerId}${suffix}`)
 }

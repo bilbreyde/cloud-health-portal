@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
-import { fetchTrends, uploadCsv } from '../api'
+import { fetchCostHistory, fetchTrends, importCostHistory, uploadCsv } from '../api'
 import { useCustomer } from '../context/CustomerContext'
-import type { UploadResult } from '../types'
+import type { CostHistoryImportResult, CostHistorySummary, UploadResult } from '../types'
 
 const MONTH_ABBR = ['January','February','March','April','May','June',
                     'July','August','September','October','November','December']
@@ -48,6 +48,13 @@ export default function Upload() {
   const [uploading, setUploading] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
 
+  const [costFile, setCostFile] = useState<File | null>(null)
+  const [costImporting, setCostImporting] = useState(false)
+  const [costResult, setCostResult] = useState<CostHistoryImportResult | null>(null)
+  const [costError, setCostError] = useState('')
+  const [costSummary, setCostSummary] = useState<CostHistorySummary | null>(null)
+  const costInputRef = useRef<HTMLInputElement>(null)
+
   // Fetch existing snapshot counts whenever customer/month/year changes
   useEffect(() => {
     if (!customerId) { setSnapshotsByService({}); return }
@@ -64,6 +71,39 @@ export default function Upload() {
       .catch(() => { if (!cancelled) setSnapshotsByService({}) })
     return () => { cancelled = true }
   }, [customerId, month, year])
+
+  useEffect(() => {
+    if (!customerId) { setCostSummary(null); return }
+    let cancelled = false
+    fetchCostHistory(customerId)
+      .then(data => { if (!cancelled) setCostSummary(data) })
+      .catch(() => { if (!cancelled) setCostSummary(null) })
+    return () => { cancelled = true }
+  }, [customerId])
+
+  async function importCostHistoryFile() {
+    if (!customerId || !costFile) return
+    setCostImporting(true)
+    setCostError('')
+    setCostResult(null)
+    const fd = new FormData()
+    fd.append('file', costFile)
+    try {
+      const result = await importCostHistory(customerId, fd)
+      setCostResult(result)
+      setCostFile(null)
+      if (costInputRef.current) costInputRef.current.value = ''
+      fetchCostHistory(customerId).then(setCostSummary).catch(() => {})
+    } catch (e) {
+      setCostError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setCostImporting(false)
+    }
+  }
+
+  const costLastMonth = costSummary?.monthlyTotals.length
+    ? costSummary.monthlyTotals[costSummary.monthlyTotals.length - 1].month
+    : null
 
   function addFiles(files: FileList | File[]) {
     const arr = Array.from(files).filter(f => f.name.endsWith('.csv'))
@@ -272,6 +312,48 @@ export default function Upload() {
           </div>
         </div>
       )}
+
+      <h1 className="page-title" style={{ marginTop: 32 }}>AWS Cost History</h1>
+      <div className="card">
+        <div className="card-title">Import Cost History</div>
+        <p style={{ fontSize: 13, color: 'var(--muted)', margin: '0 0 12px' }}>
+          Upload the CloudHealth "CostHistory" export (.csv) to import actual AWS billing by service and month.
+        </p>
+
+        {customerId && (
+          <div style={{ fontSize: 13, color: costLastMonth ? 'var(--blue, #3b82f6)' : 'var(--muted)', marginBottom: 12 }}>
+            {costLastMonth
+              ? `Cost data on file through ${costLastMonth}`
+              : 'No cost history imported yet for this customer'}
+          </div>
+        )}
+
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+          <input
+            ref={costInputRef}
+            type="file"
+            accept=".csv"
+            onChange={e => setCostFile(e.target.files?.[0] ?? null)}
+          />
+          <button
+            className="btn btn-primary"
+            onClick={importCostHistoryFile}
+            disabled={!customerId || !costFile || costImporting}
+          >
+            {costImporting ? <><span className="spinner" /> Importing…</> : 'Import Cost History'}
+          </button>
+        </div>
+
+        {costError && <div className="alert alert-error" style={{ marginTop: 12 }}>{costError}</div>}
+
+        {costResult && (
+          <div className="alert" style={{ marginTop: 12, background: 'var(--bg)', border: '1px solid var(--border)' }}>
+            Imported {costResult.monthsImported} month{costResult.monthsImported !== 1 ? 's' : ''},{' '}
+            {costResult.servicesImported} service{costResult.servicesImported !== 1 ? 's' : ''}
+            {' '}({costResult.totalRows} rows) — last imported {new Date(costResult.importedAt).toLocaleString()}
+          </div>
+        )}
+      </div>
     </main>
   )
 }

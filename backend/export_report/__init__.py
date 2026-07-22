@@ -140,6 +140,7 @@ def _build_docx(
     remaining: float,
     exc_summary: dict | None,
     exc_records: list,
+    cost_summary: dict | None,
     prev_next_steps: list,
     ongoing_next_steps: list,
     planned_savings: list,
@@ -243,8 +244,53 @@ def _build_docx(
 
     doc.add_page_break()
 
-    # ── Section 3: Service Level Analysis ─────────────────────────────────────
-    _h1(doc, '3. Service Level Analysis')
+    # ── Section 3: AWS Total Spend Overview ───────────────────────────────────
+    _h1(doc, '3. AWS Total Spend Overview')
+    _para(doc,
+          'Actual AWS billing for the reporting window, separate from the CloudHealth optimization '
+          'signal reported above.', space_after=8)
+    if narrative.get('aws_spend_overview'):
+        _multiline(doc, narrative['aws_spend_overview'])
+
+    if cost_summary and cost_summary.get('monthlyTotals'):
+        _h2(doc, '3.1 Monthly Spend — Jul 2025 to Present')
+        tbl_spend = doc.add_table(rows=1, cols=4)
+        tbl_spend.style = 'Table Grid'
+        _tbl_header(tbl_spend, ['Month', 'Direct Charges', 'Indirect Charges', 'Net Cost'])
+        for m in cost_summary['monthlyTotals']:
+            _tbl_row(tbl_spend, [
+                m['month'], _fmt(m['directCharges']), _fmt(m['indirectCharges']), _fmt(m['netCost']),
+            ])
+        _para(doc)
+
+        _h2(doc, '3.2 Top 10 Services by Cost')
+        tbl_top = doc.add_table(rows=1, cols=4)
+        tbl_top.style = 'Table Grid'
+        _tbl_header(tbl_top, ['Service', 'Current Month', 'Prior Month', 'MoM Delta'])
+        for s in cost_summary['topServices']:
+            d = s['momDelta']
+            _tbl_row(tbl_top, [
+                s['service'], _fmt(s['currentMonth']), _fmt(s['previousMonth']),
+                ('+' if d >= 0 else '') + _fmt(d),
+            ])
+        _para(doc)
+
+        _h2(doc, '3.3 Savings Plan Coverage')
+        cov = cost_summary['savingsPlanCoverage']
+        tbl_cov = doc.add_table(rows=1, cols=2)
+        tbl_cov.style = 'Table Grid'
+        _tbl_header(tbl_cov, ['Metric', 'Value'])
+        _tbl_row(tbl_cov, ['Savings Plan Covered Spend', _fmt(cov['covered'])])
+        _tbl_row(tbl_cov, ['On-Demand Spend', _fmt(cov['onDemand'])])
+        _tbl_row(tbl_cov, ['Coverage %', f"{cov['coveragePct']}%"])
+        if cost_summary.get('projectedCurrentMonth'):
+            _tbl_row(tbl_cov, ['Projected Current Month Spend', _fmt(cost_summary['projectedCurrentMonth'])])
+    else:
+        _para(doc, 'No AWS Cost History data imported for this customer yet.')
+    doc.add_page_break()
+
+    # ── Section 4: Service Level Analysis ─────────────────────────────────────
+    _h1(doc, '4. Service Level Analysis')
     _para(doc, 'Detailed breakdown of CloudHealth savings signal by AWS service for the reporting period.',
           space_after=8)
     tbl_svc = doc.add_table(rows=1, cols=5)
@@ -262,11 +308,11 @@ def _build_docx(
         ])
     doc.add_page_break()
 
-    # ── Section 4: Top Movers Analysis ────────────────────────────────────────
-    _h1(doc, '4. Top Movers Analysis')
+    # ── Section 5: Top Movers Analysis ────────────────────────────────────────
+    _h1(doc, '5. Top Movers Analysis')
     _multiline(doc, narrative.get('top_movers_analysis', ''))
 
-    _h2(doc, '4.1 Spending Increases')
+    _h2(doc, '5.1 Spending Increases')
     if top_movers_up:
         tbl_up = doc.add_table(rows=1, cols=3)
         tbl_up.style = 'Table Grid'
@@ -279,7 +325,7 @@ def _build_docx(
         _para(doc, 'No significant spending increases this period.')
     _para(doc)
 
-    _h2(doc, '4.2 Spending Decreases & Savings Realized')
+    _h2(doc, '5.2 Spending Decreases & Savings Realized')
     if top_movers_down:
         tbl_dn = doc.add_table(rows=1, cols=3)
         tbl_dn.style = 'Table Grid'
@@ -292,10 +338,10 @@ def _build_docx(
         _para(doc, 'No significant spending decreases this period.')
     doc.add_page_break()
 
-    # ── Section 5: EC2 Deep Dive ───────────────────────────────────────────────
+    # ── Section 6: EC2 Deep Dive ───────────────────────────────────────────────
     ec2_signal = curr_data.get('EC2', 0.0)
     if ec2_signal > 0:
-        _h1(doc, '5. EC2 Deep Dive')
+        _h1(doc, '6. EC2 Deep Dive')
         ec2_row = next((s for s in service_summary if s['serviceType'] == 'EC2'), None)
         if ec2_row:
             tbl_ec2 = doc.add_table(rows=1, cols=2)
@@ -308,12 +354,12 @@ def _build_docx(
             _tbl_row(tbl_ec2, ['Trend Direction', ec2_row.get('direction', '—')])
         _para(doc,
               'EC2 is typically the primary driver of cloud compute spend. '
-              'See the Exception Register (Section 7) for instances excluded from optimization scope.',
+              'See the Exception Register (Section 8) for instances excluded from optimization scope.',
               space_before=8)
         doc.add_page_break()
 
-    # ── Section 6: Savings Breakdown ──────────────────────────────────────────
-    _h1(doc, '6. Savings Breakdown')
+    # ── Section 7: Savings Breakdown ──────────────────────────────────────────
+    _h1(doc, '7. Savings Breakdown')
     _multiline(doc, narrative.get('exception_delta', ''))
 
     tbl_flow = doc.add_table(rows=1, cols=2)
@@ -327,10 +373,10 @@ def _build_docx(
         _tbl_row(tbl_flow, ['Remaining Opportunity', _fmt(remaining)])
     doc.add_page_break()
 
-    # ── Section 7: Exceptions ─────────────────────────────────────────────────
-    _h1(doc, '7. Exceptions Register')
+    # ── Section 8: Exceptions ─────────────────────────────────────────────────
+    _h1(doc, '8. Exceptions Register')
 
-    _h2(doc, '7.1 Exception Fleet Summary')
+    _h2(doc, '8.1 Exception Fleet Summary')
     if exc_summary and exc_summary.get('totalCount', 0) > 0:
         _para(doc,
               f"Total exception servers: {exc_summary['totalCount']} | "
@@ -353,7 +399,7 @@ def _build_docx(
         _para(doc, 'No exception servers recorded for this customer.')
     _para(doc)
 
-    _h2(doc, '7.2 Exception Register')
+    _h2(doc, '8.2 Exception Register')
     if exc_records:
         tbl_exc = doc.add_table(rows=1, cols=6)
         tbl_exc.style = 'Table Grid'
@@ -371,7 +417,7 @@ def _build_docx(
         _para(doc, 'No exception records on file.')
     _para(doc)
 
-    _h2(doc, '7.3 Exception & Signal Delta Analysis')
+    _h2(doc, '8.3 Exception & Signal Delta Analysis')
     exc_text = narrative.get('exception_delta', '')
     if not exc_text:
         exc_text = (
@@ -382,13 +428,13 @@ def _build_docx(
     _multiline(doc, exc_text)
     doc.add_page_break()
 
-    # ── Section 8: Risks & Constraints ────────────────────────────────────────
-    _h1(doc, '8. Risks & Constraints')
+    # ── Section 9: Risks & Constraints ────────────────────────────────────────
+    _h1(doc, '9. Risks & Constraints')
     _multiline(doc, narrative.get('risks_and_next_steps', ''))
     doc.add_page_break()
 
-    # ── Section 9: Next Steps ─────────────────────────────────────────────────
-    _h1(doc, '9. Next Steps')
+    # ── Section 10: Next Steps ────────────────────────────────────────────────
+    _h1(doc, '10. Next Steps')
 
     _h2(doc, 'Before Next Meeting')
     if prev_next_steps:
@@ -406,8 +452,8 @@ def _build_docx(
         _para(doc, 'No recurring commitments defined.')
     doc.add_page_break()
 
-    # ── Section 10: Appendix ──────────────────────────────────────────────────
-    _h1(doc, '10. Appendix')
+    # ── Section 11: Appendix ──────────────────────────────────────────────────
+    _h1(doc, '11. Appendix')
 
     if joel_notes:
         _h2(doc, 'A. Engagement Manager Notes')
@@ -469,6 +515,7 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
     narrative: dict = {
         'executive_summary': '', 'optimization_narrative': '',
         'top_movers_analysis': '', 'risks_and_next_steps': '', 'exception_delta': '',
+        'aws_spend_overview': '',
     }
     joel_notes: str = ''
     realized_savings: float = 0.0
@@ -546,6 +593,16 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
     except Exception as exc:
         logging.warning('Exception data fetch failed (non-fatal): %s', exc)
 
+    # ── Cost history data ───────────────────────────────────────────────────────
+    cost_summary = None
+    try:
+        all_cost_records = cosmos_client.get_cost_history(customer_id, '0000-00', '9999-99')
+        cost_months = sorted({r.month for r in all_cost_records})
+        if cost_months:
+            cost_summary = cosmos_client.get_cost_history_summary(customer_id, cost_months)
+    except Exception as exc:
+        logging.warning('Cost history fetch failed (non-fatal): %s', exc)
+
     exc_floor = exc_summary['totalMonthlyCost'] if exc_summary else 0.0
     total_signal = sum(curr_data.values())
     net_addressable = max(0.0, total_signal - exc_floor)
@@ -572,6 +629,7 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
             remaining=remaining,
             exc_summary=exc_summary,
             exc_records=exc_records,
+            cost_summary=cost_summary,
             prev_next_steps=prev_next_steps,
             ongoing_next_steps=ongoing_next_steps,
             planned_savings=planned_savings,

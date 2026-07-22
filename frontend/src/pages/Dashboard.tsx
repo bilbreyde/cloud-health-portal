@@ -4,11 +4,20 @@ import {
   Bar, BarChart, CartesianGrid, Cell, LabelList, Legend, Line, LineChart,
   ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis,
 } from 'recharts'
-import { fetchDashboardNarrative, fetchTrends, patchCommitment } from '../api'
+import { fetchCostHistory, fetchDashboardNarrative, fetchTrends, patchCommitment } from '../api'
 import { useCustomer } from '../context/CustomerContext'
-import type { DashboardNarrativeResponse, DataSnapshot, ServiceRow, TrendsResponse } from '../types'
+import type { CostHistorySummary, DashboardNarrativeResponse, DataSnapshot, SavingsPlanCoverage, ServiceRow, TrendsResponse } from '../types'
 
 const MONTH_ABBR = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+
+// Validated categorical palette (dataviz skill) — fixed order, never cycled.
+const COST_PALETTE = ['#2a78d6', '#eb6834', '#1baf7a', '#eda100', '#e87ba4', '#008300', '#4a3aa7']
+const COST_OTHER_COLOR = '#898781'
+
+function fmtCostMonth(m: string) {
+  const [y, mo] = m.split('-').map(Number)
+  return `${MONTH_ABBR[(mo || 1) - 1]} ${y}`
+}
 
 const SERVICE_COLORS: Record<string, string> = {
   EC2:         '#0078D4',
@@ -141,6 +150,119 @@ function ExceptionDeltaWidget({ snapshot }: { snapshot: DataSnapshot }) {
   )
 }
 
+function buildCostChartData(costData: CostHistorySummary) {
+  const months = costData.monthlyTotals.map(m => m.month)
+  const totals = costData.byService
+    .map(s => ({ service: s.service, total: Object.values(s.months).reduce((a, b) => a + b, 0) }))
+    .sort((a, b) => b.total - a.total)
+  const top = totals.slice(0, 7).map(t => t.service)
+  const colorFor = (svc: string) => {
+    const idx = top.indexOf(svc)
+    return idx >= 0 ? COST_PALETTE[idx] : COST_OTHER_COLOR
+  }
+  const chartData = months.map(month => {
+    const row: Record<string, number | string> = { month: fmtCostMonth(month) }
+    for (const svc of top) row[svc] = 0
+    row.Other = 0
+    for (const s of costData.byService) {
+      const v = s.months[month] ?? 0
+      if (top.includes(s.service)) {
+        row[s.service] = (row[s.service] as number) + v
+      } else {
+        row.Other = (row.Other as number) + v
+      }
+    }
+    return row
+  })
+  return { chartData, seriesKeys: [...top, 'Other'], colorFor }
+}
+
+function CostKpiCard({
+  label, value, accent, sub,
+}: { label: string; value: string; accent?: string; sub?: string }) {
+  return (
+    <div style={{
+      flex: '1 1 200px', padding: '14px 16px', background: 'var(--surface)',
+      border: '1px solid var(--border)', borderRadius: 8,
+      borderTop: `3px solid ${accent ?? 'var(--border)'}`,
+    }}>
+      <div style={{ fontSize: 10, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '.5px', marginBottom: 6 }}>
+        {label}
+      </div>
+      <div style={{ fontSize: 22, fontWeight: 700, color: accent ?? 'var(--text)' }}>{value}</div>
+      {sub && <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 4 }}>{sub}</div>}
+    </div>
+  )
+}
+
+function ComputeCoverageWidget({ coverage }: { coverage: SavingsPlanCoverage }) {
+  const total = coverage.covered + coverage.onDemand
+  const coveredPct = total > 0 ? (coverage.covered / total) * 100 : 0
+  return (
+    <div className="card" style={{ marginBottom: 0, flex: 1 }}>
+      <div className="card-title">Compute Coverage</div>
+      <div style={{ textAlign: 'center', marginBottom: 14 }}>
+        <div style={{ fontSize: 28, fontWeight: 700, color: COST_PALETTE[0] }}>
+          {coverage.coveragePct.toFixed(1)}%
+        </div>
+        <div style={{ fontSize: 10, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '.5px' }}>
+          Savings Plan Coverage
+        </div>
+      </div>
+      <div style={{ display: 'flex', height: 14, borderRadius: 7, overflow: 'hidden', border: '1px solid var(--border)' }}>
+        <div style={{ width: `${coveredPct}%`, background: COST_PALETTE[0] }} />
+        <div style={{ width: `${100 - coveredPct}%`, background: 'var(--border)' }} />
+      </div>
+      <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 10, fontSize: 12 }}>
+        <span style={{ color: COST_PALETTE[0], fontWeight: 600 }}>● Savings Plan {fmtMoney(coverage.covered)}</span>
+        <span style={{ color: 'var(--muted)', fontWeight: 600 }}>● On-Demand {fmtMoney(coverage.onDemand)}</span>
+      </div>
+    </div>
+  )
+}
+
+function TopServicesTable({ topServices }: { topServices: CostHistorySummary['topServices'] }) {
+  return (
+    <div className="card" style={{ marginBottom: 0, flex: '2 1 420px' }}>
+      <div className="card-title">Top Services This Month</div>
+      {topServices.length === 0 ? (
+        <p style={{ color: 'var(--muted)', fontSize: 13 }}>No cost data for this period.</p>
+      ) : (
+        <div className="table-wrap">
+          <table>
+            <thead>
+              <tr><th>Service</th><th>Current Month</th><th>Last Month</th><th>MoM Delta</th><th>Trend</th></tr>
+            </thead>
+            <tbody>
+              {topServices.map(s => {
+                const up = s.momDelta > 0.5
+                const down = s.momDelta < -0.5
+                const cls = up ? 'up' : down ? 'down' : 'flat' // .up=red (cost increase), .down=green (cost decrease)
+                const arrow = up ? '▲' : down ? '▼' : '—'
+                return (
+                  <tr key={s.service}>
+                    <td style={{ fontWeight: 600 }}>{s.service}</td>
+                    <td>{fmtMoney(s.currentMonth)}</td>
+                    <td>{fmtMoney(s.previousMonth)}</td>
+                    <td><span className={cls}>{arrow} {fmtMoney(Math.abs(s.momDelta))}</span></td>
+                    <td>
+                      <span className={
+                        up ? 'badge badge-red' : down ? 'badge badge-green' : 'badge badge-gray'
+                      }>
+                        {up ? 'Up' : down ? 'Down' : 'Flat'}
+                      </span>
+                    </td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ── Main component ──────────────────────────────────────────────────────────
 
 export default function Dashboard() {
@@ -160,6 +282,10 @@ export default function Dashboard() {
   const [narrError,   setNarrError]   = useState('')
   const [joelExpanded, setJoelExpanded] = useState(false)
 
+  const [costData,    setCostData]    = useState<CostHistorySummary | null>(null)
+  const [costLoading, setCostLoading] = useState(false)
+  const [costError,   setCostError]   = useState('')
+
   useEffect(() => {
     setData(null)
     setError('')
@@ -173,6 +299,16 @@ export default function Dashboard() {
       .then(setNarr)
       .catch(e => setNarrError(String(e)))
       .finally(() => setNarrLoading(false))
+  }, [customerId])
+
+  useEffect(() => {
+    if (!customerId) { setCostData(null); return }
+    setCostLoading(true)
+    setCostError('')
+    fetchCostHistory(customerId)
+      .then(setCostData)
+      .catch(e => setCostError(String(e)))
+      .finally(() => setCostLoading(false))
   }, [customerId])
 
   function loadNarrative(force: boolean) {
@@ -244,6 +380,19 @@ export default function Dashboard() {
     if (!prev || prev.total === 0) return null
     return ((last.total - prev.total) / prev.total) * 100
   })()
+
+  // ── Derived: cost history KPIs ────────────────────────────────────────────
+  const costTotals = costData?.monthlyTotals ?? []
+  const todayKey = (() => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}` })()
+  const latestCostMonth = costTotals[costTotals.length - 1]
+  const isLatestCurrent = latestCostMonth?.month === todayKey
+  const currentMonthSpend = isLatestCurrent ? latestCostMonth : null
+  const lastFullMonth = isLatestCurrent ? costTotals[costTotals.length - 2] : latestCostMonth
+  const priorToLastFull = isLatestCurrent ? costTotals[costTotals.length - 3] : costTotals[costTotals.length - 2]
+  const costMomDelta = lastFullMonth && priorToLastFull ? lastFullMonth.directCharges - priorToLastFull.directCharges : null
+  const costMomPct = costMomDelta !== null && priorToLastFull && priorToLastFull.directCharges !== 0
+    ? (costMomDelta / priorToLastFull.directCharges) * 100 : null
+  const costChart = costData ? buildCostChartData(costData) : null
 
   const hasSteps = narr && narr.prevNextSteps.length > 0
   const hasJoel  = narr && narr.dataSnapshot.joelNotes
@@ -330,6 +479,95 @@ export default function Dashboard() {
               : 'Load data to see'}
           />
         </div>
+      )}
+
+      {/* ── AWS SPEND OVERVIEW ───────────────────────────────────────────── */}
+      {customerId && (
+        <>
+          <h2 style={{ fontSize: 13, fontWeight: 700, letterSpacing: '.5px', textTransform: 'uppercase', color: 'var(--muted)', margin: '4px 0 12px' }}>
+            AWS Spend Overview
+          </h2>
+
+          {costError && <div className="alert alert-error" style={{ marginBottom: 16 }}>{costError}</div>}
+
+          {!costLoading && !costData && !costError && (
+            <div className="card" style={{ textAlign: 'center', padding: '24px 20px' }}>
+              <div style={{ fontSize: 13, color: 'var(--muted)' }}>
+                No AWS Cost History imported yet.{' '}
+                <Link to="/upload">Import a CostHistory CSV</Link> to see spend trends here.
+              </div>
+            </div>
+          )}
+
+          {(costLoading || costData) && (
+            <>
+              {/* KPI cards */}
+              <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 20 }}>
+                <CostKpiCard
+                  label="Current Month Spend"
+                  value={currentMonthSpend ? fmtMoney(currentMonthSpend.directCharges) : '—'}
+                  accent={COST_PALETTE[0]}
+                  sub={currentMonthSpend
+                    ? `Projected: ${fmtMoney(costData?.projectedCurrentMonth ?? 0)}`
+                    : (latestCostMonth ? `Not yet started (data through ${fmtCostMonth(latestCostMonth.month)})` : undefined)}
+                />
+                <CostKpiCard
+                  label="Last Full Month Spend"
+                  value={lastFullMonth ? fmtMoney(lastFullMonth.directCharges) : '—'}
+                  sub={lastFullMonth ? fmtCostMonth(lastFullMonth.month) : undefined}
+                />
+                <CostKpiCard
+                  label="MoM Change"
+                  value={costMomDelta !== null
+                    ? `${costMomDelta >= 0 ? '+' : ''}${fmtMoney(costMomDelta)}`
+                    : '—'}
+                  accent={costMomDelta !== null ? (costMomDelta > 0 ? 'var(--red)' : 'var(--green)') : undefined}
+                  sub={costMomPct !== null ? `${costMomPct >= 0 ? '+' : ''}${costMomPct.toFixed(1)}%` : undefined}
+                />
+                <CostKpiCard
+                  label="Savings Plan Coverage"
+                  value={costData ? `${costData.savingsPlanCoverage.coveragePct.toFixed(1)}%` : '—'}
+                  accent={COST_PALETTE[0]}
+                />
+              </div>
+
+              <div style={{ display: 'flex', gap: 20, marginBottom: 20, flexWrap: 'wrap', alignItems: 'stretch' }}>
+                {/* Stacked cost history chart */}
+                <div className="card" style={{ flex: '13 1 520px', minWidth: 0, marginBottom: 0 }}>
+                  <div className="card-title">AWS Cost History</div>
+                  {costLoading && <Skeleton height={340} />}
+                  {!costLoading && costChart && (
+                    <ResponsiveContainer width="100%" height={340}>
+                      <BarChart data={costChart.chartData} margin={{ top: 4, right: 16, bottom: 0, left: 10 }}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" vertical={false} />
+                        <XAxis dataKey="month" tick={{ fontSize: 11 }} />
+                        <YAxis tickFormatter={v => fmtK(v as number)} tick={{ fontSize: 11 }} width={56} />
+                        <Tooltip
+                          formatter={(v, name) => [fmtMoney(Number(v ?? 0)), String(name)]}
+                          contentStyle={{ fontSize: 12 }}
+                        />
+                        <Legend wrapperStyle={{ fontSize: 11, paddingTop: 8 }} />
+                        {costChart.seriesKeys.map(svc => (
+                          <Bar key={svc} dataKey={svc} stackId="cost" fill={costChart.colorFor(svc)} />
+                        ))}
+                      </BarChart>
+                    </ResponsiveContainer>
+                  )}
+                </div>
+
+                {/* Compute Coverage */}
+                {costData && <ComputeCoverageWidget coverage={costData.savingsPlanCoverage} />}
+              </div>
+
+              {/* Top Services table */}
+              {costData && (
+                <div style={{ marginBottom: 20 }}>
+                  <TopServicesTable topServices={costData.topServices} />
+                </div>
+              )}
+            </>
+          )}
+        </>
       )}
 
       {/* ── ROW 2: Line chart (65%) + AI Insights (35%) ──────────────────── */}

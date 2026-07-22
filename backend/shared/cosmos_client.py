@@ -1,10 +1,12 @@
+import calendar
 import os
-from datetime import timezone
+import uuid
+from datetime import datetime, timezone
 from typing import Optional
 
 from azure.cosmos import CosmosClient, PartitionKey, exceptions
 
-from .models import Customer, ExceptionRecord, Report, Template, TrendData, Upload
+from .models import CostHistoryRecord, Customer, ExceptionRecord, Report, Template, TrendData, Upload
 
 
 def _utc(dt):
@@ -20,6 +22,7 @@ _CONTAINERS = {
     "reports": "/customerId",
     "templates": "/customerId",
     "exceptions": "/customerId",
+    "cost_history": "/customerId",
 }
 
 # customers container is special — the customer IS the partition, so we store
@@ -370,4 +373,157 @@ def exceptions_summary(customer_id: str) -> dict:
         'totalMonthlyCost': total_cost,
         'byCategory': sorted(by_cat.values(), key=lambda x: -x['monthlyCost']),
         'byLifecycle': sorted(by_lc.values(), key=lambda x: -x['monthlyCost']),
+    }
+
+
+# ── cost_history ─────────────────────────────────────────────────────────────
+
+def upsert_cost_history(
+    customer_id: str,
+    month: str,
+    service: str,
+    amount: float,
+    charge_type: str,
+    imported_at: Optional[datetime] = None,
+    source_file: str = '',
+) -> CostHistoryRecord:
+    # Deterministic id so re-importing the same CSV overwrites rather than duplicates.
+    doc_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f'{customer_id}:{month}:{charge_type}:{service}'))
+    record = CostHistoryRecord(
+        id=doc_id,
+        customerId=customer_id,
+        month=month,
+        service=service,
+        amount=amount,
+        chargeType=charge_type,
+        importedAt=imported_at or datetime.now(timezone.utc),
+        sourceFile=source_file,
+    )
+    container = _get_container('cost_history')
+    container.upsert_item(record.to_dict())
+    return record
+
+
+def get_cost_history(customer_id: str, start_month: str, end_month: str) -> list[CostHistoryRecord]:
+    container = _get_container('cost_history')
+    query = (
+        'SELECT * FROM c WHERE c.customerId = @customerId '
+        'AND c.month >= @startMonth AND c.month <= @endMonth'
+    )
+    params = [
+        {'name': '@customerId', 'value': customer_id},
+        {'name': '@startMonth', 'value': start_month},
+        {'name': '@endMonth', 'value': end_month},
+    ]
+    items = container.query_items(query=query, parameters=params, partition_key=customer_id)
+    results = [CostHistoryRecord.from_dict(i) for i in items]
+    return sorted(results, key=lambda r: (r.month, r.chargeType, r.service))
+
+
+def get_cost_history_summary(customer_id: str, months: list) -> dict:
+    """Aggregate cost_history records for the given months into dashboard-ready shape."""
+    empty = {
+        'monthlyTotals': [],
+        'byService': [],
+        'topServices': [],
+        'savingsPlanCoverage': {'covered': 0.0, 'onDemand': 0.0, 'coveragePct': 0.0},
+        'projectedCurrentMonth': 0.0,
+    }
+    months_sorted = sorted(set(months))
+    if not months_sorted:
+        return empty
+
+    records = get_cost_history(customer_id, months_sorted[0], months_sorted[-1])
+    records = [r for r in records if r.month in months_sorted]
+    if not records:
+        return empty
+
+    # ── monthly totals (direct / indirect / net) ──────────────────────────────
+    direct_by_month: dict[str, float] = {m: 0.0 for m in months_sorted}
+    indirect_by_month: dict[str, float] = {m: 0.0 for m in months_sorted}
+    by_service_month: dict[str, dict[str, float]] = {}
+
+    for r in records:
+        if r.chargeType == 'indirect':
+            indirect_by_month[r.month] = indirect_by_month.get(r.month, 0.0) + r.amount
+        else:
+            direct_by_month[r.month] = direct_by_month.get(r.month, 0.0) + r.amount
+        by_service_month.setdefault(r.service, {})
+        by_service_month[r.service][r.month] = by_service_month[r.service].get(r.month, 0.0) + r.amount
+
+    monthly_totals = [
+        {
+            'month': m,
+            'directCharges': round(direct_by_month.get(m, 0.0), 2),
+            'indirectCharges': round(indirect_by_month.get(m, 0.0), 2),
+            'netCost': round(direct_by_month.get(m, 0.0) + indirect_by_month.get(m, 0.0), 2),
+        }
+        for m in months_sorted
+    ]
+
+    # ── by-service breakdown + trend ───────────────────────────────────────────
+    by_service = []
+    for service, month_vals in by_service_month.items():
+        ordered = [month_vals[m] for m in months_sorted if m in month_vals]
+        trend = 'flat'
+        if len(ordered) >= 2:
+            delta = ordered[-1] - ordered[-2]
+            threshold = max(50.0, abs(ordered[-2]) * 0.03)
+            if delta > threshold:
+                trend = 'up'
+            elif delta < -threshold:
+                trend = 'down'
+        by_service.append({
+            'service': service,
+            'months': {m: round(v, 2) for m, v in month_vals.items()},
+            'trend': trend,
+        })
+    by_service.sort(key=lambda s: -sum(s['months'].values()))
+
+    # ── top services this month ────────────────────────────────────────────────
+    current_month = months_sorted[-1]
+    previous_month = months_sorted[-2] if len(months_sorted) >= 2 else None
+    top_services = []
+    for service, month_vals in by_service_month.items():
+        curr = month_vals.get(current_month, 0.0)
+        prev = month_vals.get(previous_month, 0.0) if previous_month else 0.0
+        mom_delta = curr - prev
+        mom_pct = (mom_delta / prev * 100) if prev else None
+        top_services.append({
+            'service': service,
+            'currentMonth': round(curr, 2),
+            'previousMonth': round(prev, 2),
+            'momDelta': round(mom_delta, 2),
+            'momPct': round(mom_pct, 2) if mom_pct is not None else None,
+        })
+    top_services.sort(key=lambda s: -s['currentMonth'])
+    top_services = top_services[:10]
+
+    # ── savings plan coverage (current month) ──────────────────────────────────
+    # Indirect charges carry savings-plan credits/negations; their magnitude is the
+    # portion of direct spend effectively covered by a savings plan rather than on-demand.
+    covered = abs(indirect_by_month.get(current_month, 0.0))
+    direct_total = direct_by_month.get(current_month, 0.0)
+    on_demand = max(0.0, direct_total - covered)
+    coverage_pct = round((covered / (covered + on_demand) * 100), 1) if (covered + on_demand) > 0 else 0.0
+
+    # ── projected current month spend ──────────────────────────────────────────
+    # Only extrapolated when the latest month is the real, still-in-progress calendar
+    # month; a fully closed month is reported as-is with no projection applied.
+    today = datetime.now(timezone.utc).date()
+    projected_current_month = round(direct_total, 2)
+    if current_month == today.strftime('%Y-%m') and today.day > 0:
+        days_in_month = calendar.monthrange(today.year, today.month)[1]
+        projected_current_month = round(direct_total / today.day * days_in_month, 2)
+
+    return {
+        'monthlyTotals': monthly_totals,
+        'byService': by_service,
+        'topServices': top_services,
+        'savingsPlanCoverage': {
+            'covered': round(covered, 2),
+            'onDemand': round(on_demand, 2),
+            'coveragePct': coverage_pct,
+        },
+        'projectedCurrentMonth': projected_current_month,
     }

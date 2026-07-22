@@ -284,6 +284,43 @@ class ExceptionRecord:
 
 
 @dataclass
+class CostHistoryRecord:
+    id: str
+    customerId: str
+    month: str              # YYYY-MM
+    service: str
+    amount: float
+    chargeType: str         # direct | indirect
+    importedAt: datetime
+    sourceFile: str = ''
+
+    def to_dict(self) -> dict:
+        return {
+            'id': self.id,
+            'customerId': self.customerId,
+            'month': self.month,
+            'service': self.service,
+            'amount': self.amount,
+            'chargeType': self.chargeType,
+            'importedAt': self.importedAt.isoformat(),
+            'sourceFile': self.sourceFile,
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> 'CostHistoryRecord':
+        return cls(
+            id=d['id'],
+            customerId=d['customerId'],
+            month=d['month'],
+            service=d['service'],
+            amount=float(d.get('amount', 0.0)),
+            chargeType=d.get('chargeType', 'direct'),
+            importedAt=datetime.fromisoformat(d['importedAt']),
+            sourceFile=d.get('sourceFile', ''),
+        )
+
+
+@dataclass
 class Template:
     id: str
     customerId: str

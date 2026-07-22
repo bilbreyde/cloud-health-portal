@@ -75,6 +75,7 @@ export interface NarrativeDraft {
   top_movers_analysis: string
   risks_and_next_steps: string
   exception_delta?: string
+  aws_spend_overview?: string
 }
 
 export interface ReportResponse {
@@ -95,6 +96,7 @@ export interface ReportResponse {
   totalSignal: number
   realizedSavings: number
   exceptionFloor: number
+  costSummary?: CostHistorySummary | null
 }
 
 export interface ExtractedReportData {
@@ -182,6 +184,50 @@ export interface DashboardNarrativeResponse {
   prevNextSteps: string[]
   commitments: Record<string, boolean>
   cached: boolean
+}
+
+export interface CostHistoryImportResult {
+  success: boolean
+  monthsImported: number
+  servicesImported: number
+  totalRows: number
+  importedAt: string
+  error?: string
+}
+
+export interface CostMonthlyTotal {
+  month: string
+  directCharges: number
+  indirectCharges: number
+  netCost: number
+}
+
+export interface CostByService {
+  service: string
+  months: Record<string, number>
+  trend: 'up' | 'down' | 'flat'
+}
+
+export interface CostTopService {
+  service: string
+  currentMonth: number
+  previousMonth: number
+  momDelta: number
+  momPct: number | null
+}
+
+export interface SavingsPlanCoverage {
+  covered: number
+  onDemand: number
+  coveragePct: number
+}
+
+export interface CostHistorySummary {
+  monthlyTotals: CostMonthlyTotal[]
+  byService: CostByService[]
+  topServices: CostTopService[]
+  savingsPlanCoverage: SavingsPlanCoverage
+  projectedCurrentMonth: number
 }
 
 export interface Report {

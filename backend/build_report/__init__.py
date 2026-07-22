@@ -53,6 +53,7 @@ def _build_user_prompt(
     project_updates: list | None = None,
     progress_narrative: str = '',
     ongoing_next_steps: list | None = None,
+    cost_summary: dict | None = None,
 ) -> str:
     month_label = datetime(year, month, 1).strftime('%B %Y')
     total_signal = sum(curr_data.values())
@@ -148,9 +149,28 @@ def _build_user_prompt(
             f"(incorporate directly — these describe actual work done):\n{joel_notes}"
         )
 
+    if cost_summary and cost_summary.get('monthlyTotals'):
+        totals = cost_summary['monthlyTotals']
+        curr_cost = totals[-1]['directCharges']
+        last_cost = totals[-2]['directCharges'] if len(totals) >= 2 else 0.0
+        coverage_pct = cost_summary['savingsPlanCoverage']['coveragePct']
+        top_svc_str = ', '.join(
+            f"{s['service']} (${s['currentMonth']:,.2f})" for s in cost_summary['topServices'][:5]
+        )
+        lines.append(f"""
+Total AWS spend context (this is actual billing, separate from the optimization signal above):
+Current month spend: ${curr_cost:,.2f}
+Last month spend: ${last_cost:,.2f}
+MoM change: {'+' if curr_cost - last_cost >= 0 else ''}${curr_cost - last_cost:,.2f}
+Savings Plan coverage: {coverage_pct}%
+Top cost drivers: {top_svc_str}
+
+Note: The CloudHealth savings signal (${total_signal:,.2f}) represents optimization opportunity
+within this total spend. Keep these two metrics clearly distinct in the report.""")
+
     lines.append("""
 Generate a formal cloud cost optimization consulting report.
-Return a JSON object with exactly these five string keys:
+Return a JSON object with exactly these six string keys:
   "executive_summary"          - 2 to 3 paragraph executive summary
   "optimization_narrative"     - detailed analysis of cost drivers, completed actions, and opportunities;
                                  explicitly reference the planned savings pipeline and project statuses
@@ -166,6 +186,10 @@ Return a JSON object with exactly these five string keys:
                                  (4) reference realized savings as confirmed executed actions only,
                                  (5) state remaining addressable opportunity.
                                  Tone: professional consultant, matter-of-fact.
+  "aws_spend_overview"          - 1-2 professional paragraphs on actual AWS billing (total spend,
+                                 MoM change, Savings Plan coverage, top cost drivers). This is real
+                                 billing data, distinct from the CloudHealth savings signal discussed
+                                 above — keep the two clearly separate. Omit if no spend data was provided.
 
 Return only the JSON object. No markdown fences, no extra keys.""")
 
@@ -310,6 +334,19 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         except Exception as exc:
             logging.warning('Step 5: exception summary fetch failed (non-fatal): %s', exc)
 
+        # ── Step 5b: Fetch AWS cost history summary ────────────────────────────
+        step = 'fetching cost history summary'
+        logging.info('Step 5b: Fetching cost history summary')
+        cost_summary: dict | None = None
+        try:
+            all_cost_records = cosmos_client.get_cost_history(customer_id, '0000-00', '9999-99')
+            cost_months = sorted({r.month for r in all_cost_records})
+            if cost_months:
+                cost_summary = cosmos_client.get_cost_history_summary(customer_id, cost_months)
+            logging.info('Step 5b done: months=%d', len(cost_months))
+        except Exception as exc:
+            logging.warning('Step 5b: cost history fetch failed (non-fatal): %s', exc)
+
         # ── Step 6: Call Azure OpenAI ─────────────────────────────────────────
         step = 'calling Azure OpenAI'
         logging.info('Step 6: Calling Azure OpenAI — model=%s endpoint=%s',
@@ -339,6 +376,7 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
             project_updates=project_updates,
             progress_narrative=progress_narrative,
             ongoing_next_steps=ongoing_next_steps,
+            cost_summary=cost_summary,
         )
 
         narrative = {
@@ -347,6 +385,7 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
             'top_movers_analysis': '',
             'risks_and_next_steps': '',
             'exception_delta': '',
+            'aws_spend_overview': '',
         }
         try:
             completion = ai_client.chat.completions.create(
@@ -413,4 +452,5 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         'totalSignal': round(total_signal, 2),
         'realizedSavings': round(realized_savings, 2),
         'exceptionFloor': round(exc_floor, 2),
+        'costSummary': cost_summary,
     })

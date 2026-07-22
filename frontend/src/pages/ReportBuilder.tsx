@@ -119,6 +119,12 @@ export default function ReportBuilder() {
   const netAddressable  = Math.max(0, totalSignal - exceptionFloor)
   const remaining       = Math.max(0, netAddressable - realizedSavings)
 
+  // AWS Spend Overview derived values
+  const costTotals = report?.costSummary?.monthlyTotals ?? []
+  const costCurrent = costTotals[costTotals.length - 1]
+  const costPrevious = costTotals[costTotals.length - 2]
+  const costMomDelta = costCurrent && costPrevious ? costCurrent.directCharges - costPrevious.directCharges : null
+
   return (
     <main className="page">
       <h1 className="page-title">Report Builder</h1>
@@ -241,6 +247,61 @@ export default function ReportBuilder() {
               />
             </div>
           </div>
+
+          {/* AWS Spend Overview section */}
+          {report.costSummary && (
+            <div className="card">
+              <div className="card-title">AWS Spend Overview</div>
+
+              <div style={{
+                display: 'flex', alignItems: 'center', gap: 24, flexWrap: 'wrap',
+                padding: '10px 0 16px', marginBottom: 16, borderBottom: '1px solid var(--border)',
+              }}>
+                <FlowStat label="Current Month" value={costCurrent ? fmtMoney(costCurrent.directCharges) : '—'} />
+                <FlowStat label="Last Month" value={costPrevious ? fmtMoney(costPrevious.directCharges) : '—'} />
+                <FlowStat
+                  label="MoM Change"
+                  value={costMomDelta !== null ? `${costMomDelta >= 0 ? '+' : ''}${fmtMoney(costMomDelta)}` : '—'}
+                  accent={costMomDelta !== null ? (costMomDelta > 0 ? 'var(--red)' : 'var(--green)') : undefined}
+                />
+                <FlowStat
+                  label="Savings Plan Coverage"
+                  value={`${report.costSummary.savingsPlanCoverage.coveragePct.toFixed(1)}%`}
+                  accent="var(--blue)"
+                />
+              </div>
+
+              <div className="table-wrap">
+                <table>
+                  <thead><tr><th>Service</th><th>Current Month</th><th>Last Month</th><th>MoM Delta</th></tr></thead>
+                  <tbody>
+                    {report.costSummary.topServices.map(s => (
+                      <tr key={s.service}>
+                        <td style={{ fontWeight: 600 }}>{s.service}</td>
+                        <td>{fmtMoney(s.currentMonth)}</td>
+                        <td>{fmtMoney(s.previousMonth)}</td>
+                        <td>
+                          <span className={s.momDelta > 0.5 ? 'up' : s.momDelta < -0.5 ? 'down' : 'flat'}>
+                            {s.momDelta > 0.5 ? '▲' : s.momDelta < -0.5 ? '▼' : '—'} {fmtMoney(Math.abs(s.momDelta))}
+                          </span>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              <div className="narrative-section" style={{ margin: '16px 0 0' }}>
+                <div className="narrative-label">AWS Spend Overview Narrative</div>
+                <textarea
+                  value={draft.aws_spend_overview ?? ''}
+                  onChange={e => updateDraft('aws_spend_overview', e.target.value)}
+                  style={{ width: '100%', minHeight: 140 }}
+                  placeholder="Auto-generated when report is built…"
+                />
+              </div>
+            </div>
+          )}
 
           <div className="grid-2">
             <div className="card">

@@ -123,6 +123,16 @@ def _handle_get(customer_id: str, force: bool) -> func.HttpResponse:
     except Exception as exc:
         logging.warning('Could not fetch exception summary: %s', exc)
 
+    # ── AWS total spend (actual billing, separate from CloudHealth signal) ────
+    cost_summary = None
+    try:
+        all_cost_records = cosmos_client.get_cost_history(customer_id, '0000-00', '9999-99')
+        cost_months = sorted({r.month for r in all_cost_records})
+        if cost_months:
+            cost_summary = cosmos_client.get_cost_history_summary(customer_id, cost_months)
+    except Exception as exc:
+        logging.warning('Could not fetch cost history summary: %s', exc)
+
     exc_floor = exc_summary['totalMonthlyCost'] if exc_summary else 0.0
     net_addressable = max(0.0, total_signal - exc_floor)
 
@@ -206,6 +216,13 @@ def _handle_get(customer_id: str, force: bool) -> func.HttpResponse:
         'prevReportLabel': prev_report_label,
         'joelNotes': joel_notes,
     }
+    if cost_summary:
+        data_snapshot['costHistory'] = {
+            'monthlyTotals': cost_summary['monthlyTotals'],
+            'topServices': cost_summary['topServices'],
+            'savingsPlanCoverage': cost_summary['savingsPlanCoverage'],
+            'projectedCurrentMonth': cost_summary['projectedCurrentMonth'],
+        }
 
     # ── Build MoM movers for prompt ────────────────────────────────────────────
     movers_up = sorted(
@@ -260,6 +277,26 @@ def _handle_get(customer_id: str, force: bool) -> func.HttpResponse:
         lines.append(f"\nPrevious report progress context:\n{progress_narrative[:800]}")
     if joel_notes:
         lines.append(f"\nEngagement manager notes (ground truth):\n{joel_notes}")
+
+    if cost_summary and cost_summary['monthlyTotals']:
+        totals = cost_summary['monthlyTotals']
+        curr_cost = totals[-1]['directCharges']
+        last_cost = totals[-2]['directCharges'] if len(totals) >= 2 else 0.0
+        mom_change = curr_cost - last_cost
+        coverage_pct = cost_summary['savingsPlanCoverage']['coveragePct']
+        top_svc_str = ', '.join(
+            f"{s['service']} (${s['currentMonth']:,.2f})" for s in cost_summary['topServices'][:5]
+        )
+        lines.append(f"""
+Total AWS spend context (this is actual billing, separate from optimization signal):
+Current month spend: ${curr_cost:,.2f}
+Last month spend: ${last_cost:,.2f}
+MoM change: {'+' if mom_change >= 0 else ''}${mom_change:,.2f}
+Savings Plan coverage: {coverage_pct}%
+Top cost drivers: {top_svc_str}
+
+Note: The CloudHealth savings signal (${total_signal:,.2f}) represents optimization opportunity
+within this total spend. Keep these two metrics clearly distinct in the narrative.""")
 
     lines.append("""
 Generate a concise executive dashboard narrative. Return a JSON object with exactly these four string keys:
