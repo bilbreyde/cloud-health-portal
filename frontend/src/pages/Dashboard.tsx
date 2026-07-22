@@ -392,7 +392,8 @@ export default function Dashboard() {
   const costMomDelta = lastFullMonth && priorToLastFull ? lastFullMonth.directCharges - priorToLastFull.directCharges : null
   const costMomPct = costMomDelta !== null && priorToLastFull && priorToLastFull.directCharges !== 0
     ? (costMomDelta / priorToLastFull.directCharges) * 100 : null
-  const costChart = costData ? buildCostChartData(costData) : null
+  const costHasData = !!costData && costData.monthlyTotals.length > 0
+  const costChart = costHasData ? buildCostChartData(costData!) : null
 
   const hasSteps = narr && narr.prevNextSteps.length > 0
   const hasJoel  = narr && narr.dataSnapshot.joelNotes
@@ -490,7 +491,7 @@ export default function Dashboard() {
 
           {costError && <div className="alert alert-error" style={{ marginBottom: 16 }}>{costError}</div>}
 
-          {!costLoading && !costData && !costError && (
+          {!costLoading && !costHasData && !costError && (
             <div className="card" style={{ textAlign: 'center', padding: '24px 20px' }}>
               <div style={{ fontSize: 13, color: 'var(--muted)' }}>
                 No AWS Cost History imported yet.{' '}
@@ -499,7 +500,7 @@ export default function Dashboard() {
             </div>
           )}
 
-          {(costLoading || costData) && (
+          {(costLoading || costHasData) && (
             <>
               {/* KPI cards */}
               <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 20 }}>

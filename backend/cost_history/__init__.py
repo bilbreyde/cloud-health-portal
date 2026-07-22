@@ -159,9 +159,10 @@ def _handle_get(req: func.HttpRequest, customer_id: str) -> func.HttpResponse:
 
     all_records = cosmos_client.get_cost_history(customer_id, start_month, end_month)
     months = sorted({r.month for r in all_records})
-    if not months:
-        return cors_response({'error': 'No cost history data found for this customer'}, 404)
 
+    # No cost history imported yet is a valid, empty state — not an error — so the
+    # dashboard/upload pages can render their "not imported yet" UI without treating
+    # a routine background fetch as a failed request.
     summary = cosmos_client.get_cost_history_summary(customer_id, months)
     return cors_response(summary)
 
