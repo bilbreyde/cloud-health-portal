@@ -178,8 +178,8 @@ function buildCostChartData(costData: CostHistorySummary) {
 }
 
 function CostKpiCard({
-  label, value, accent, sub,
-}: { label: string; value: string; accent?: string; sub?: string }) {
+  label, value, accent, sub, afterCredits,
+}: { label: string; value: string; accent?: string; sub?: string; afterCredits?: string }) {
   return (
     <div style={{
       flex: '1 1 200px', padding: '14px 16px', background: 'var(--surface)',
@@ -191,6 +191,11 @@ function CostKpiCard({
       </div>
       <div style={{ fontSize: 22, fontWeight: 700, color: accent ?? 'var(--text)' }}>{value}</div>
       {sub && <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 4 }}>{sub}</div>}
+      {afterCredits && (
+        <div style={{ fontSize: 11, color: 'var(--green)', marginTop: 2, fontWeight: 600 }}>
+          After Credits: {afterCredits}
+        </div>
+      )}
     </div>
   )
 }
@@ -511,6 +516,7 @@ export default function Dashboard() {
                   sub={currentMonthSpend
                     ? `Projected: ${fmtMoney(costData?.projectedCurrentMonth ?? 0)}`
                     : (latestCostMonth ? `Not yet started (data through ${fmtCostMonth(latestCostMonth.month)})` : undefined)}
+                  afterCredits={currentMonthSpend ? fmtMoney(currentMonthSpend.netCost) : undefined}
                 />
                 <CostKpiCard
                   label="Last Full Month Spend"

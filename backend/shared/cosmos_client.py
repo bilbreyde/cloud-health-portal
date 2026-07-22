@@ -1,5 +1,6 @@
 import calendar
 import os
+import re
 import uuid
 from datetime import datetime, timezone
 from typing import Optional
@@ -499,13 +500,20 @@ def get_cost_history_summary(customer_id: str, months: list) -> dict:
     # ── monthly totals (direct / indirect / net) ──────────────────────────────
     direct_by_month: dict[str, float] = {m: 0.0 for m in months_sorted}
     indirect_by_month: dict[str, float] = {m: 0.0 for m in months_sorted}
+    ec2_compute_by_month: dict[str, float] = {m: 0.0 for m in months_sorted}
+    savings_plan_by_month: dict[str, float] = {m: 0.0 for m in months_sorted}
     by_service_month: dict[str, dict[str, float]] = {}
 
     for r in records:
+        normalized_service = re.sub(r'\s+', ' ', r.service.strip().lower())
         if r.chargeType == 'indirect':
             indirect_by_month[r.month] = indirect_by_month.get(r.month, 0.0) + r.amount
+            if 'savings plan' in normalized_service:
+                savings_plan_by_month[r.month] = savings_plan_by_month.get(r.month, 0.0) + r.amount
         else:
             direct_by_month[r.month] = direct_by_month.get(r.month, 0.0) + r.amount
+            if normalized_service == 'ec2 - compute':
+                ec2_compute_by_month[r.month] = ec2_compute_by_month.get(r.month, 0.0) + r.amount
         by_service_month.setdefault(r.service, {})
         by_service_month[r.service][r.month] = by_service_month[r.service].get(r.month, 0.0) + r.amount
 
@@ -558,12 +566,18 @@ def get_cost_history_summary(customer_id: str, months: list) -> dict:
     top_services = top_services[:10]
 
     # ── savings plan coverage (current month) ──────────────────────────────────
-    # Indirect charges carry savings-plan credits/negations; their magnitude is the
-    # portion of direct spend effectively covered by a savings plan rather than on-demand.
-    covered = abs(indirect_by_month.get(current_month, 0.0))
-    direct_total = direct_by_month.get(current_month, 0.0)
-    on_demand = max(0.0, direct_total - covered)
+    # Scoped to compute, not total spend: Savings Plans apply against EC2 compute
+    # usage specifically, not storage/transfer/etc. "Covered" is the absolute value
+    # of indirect rows whose service name names a Savings Plan (the indirect section
+    # can carry other credit/negation types too, e.g. RI amortization, which aren't
+    # part of this ratio). "On demand" is the direct EC2 - Compute total itself —
+    # Savings Plan usage is billed as a negation against that same line, so the
+    # negation's magnitude is already part of ec2_compute_direct, not on top of it.
+    covered = abs(savings_plan_by_month.get(current_month, 0.0))
+    ec2_compute_direct = ec2_compute_by_month.get(current_month, 0.0)
+    on_demand = max(0.0, ec2_compute_direct)
     coverage_pct = round((covered / (covered + on_demand) * 100), 1) if (covered + on_demand) > 0 else 0.0
+    direct_total = direct_by_month.get(current_month, 0.0)
 
     # ── projected current month spend ──────────────────────────────────────────
     # Only extrapolated when the latest month is the real, still-in-progress calendar

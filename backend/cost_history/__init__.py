@@ -72,7 +72,13 @@ def _parse_cost_history_csv(file_bytes: bytes) -> dict:
     if service_col is None or not month_cols:
         raise ValueError('CSV does not match the expected CostHistory format (missing Service Items / month columns)')
 
-    records: list[dict] = []
+    # Keyed by (month, chargeType, service) and summed rather than appended as a flat
+    # list: the CloudHealth export can list the same service name more than once in a
+    # section (e.g. broken out by linked account upstream, flattened to one name here),
+    # and each (month, chargeType, service) maps to one deterministic Cosmos document id
+    # downstream — summing here means a repeated row correctly adds to that id's total
+    # instead of the last duplicate silently overwriting the earlier ones in Cosmos.
+    totals: dict[tuple, float] = {}
     services_seen: set = set()
     current_charge_type: Optional[str] = None
 
@@ -94,12 +100,13 @@ def _parse_cost_history_csv(file_bytes: bytes) -> dict:
             amount = _parse_amount(row.get(month))
             if amount is None:
                 continue
-            records.append({
-                'month': month,
-                'service': service_name,
-                'amount': amount,
-                'chargeType': current_charge_type,
-            })
+            key = (month, current_charge_type, service_name)
+            totals[key] = totals.get(key, 0.0) + amount
+
+    records = [
+        {'month': month, 'chargeType': charge_type, 'service': service, 'amount': amount}
+        for (month, charge_type, service), amount in totals.items()
+    ]
 
     return {
         'monthColumns': month_cols,
