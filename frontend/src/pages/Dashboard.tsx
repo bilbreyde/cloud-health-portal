@@ -178,24 +178,26 @@ function buildCostChartData(costData: CostHistorySummary) {
 }
 
 function CostKpiCard({
-  label, value, accent, sub, afterCredits,
-}: { label: string; value: string; accent?: string; sub?: string; afterCredits?: string }) {
+  label, value, accent, sub, sub2, tooltip,
+}: { label: string; value: string; accent?: string; sub?: string; sub2?: string; tooltip?: string }) {
   return (
     <div style={{
       flex: '1 1 200px', padding: '14px 16px', background: 'var(--surface)',
       border: '1px solid var(--border)', borderRadius: 8,
       borderTop: `3px solid ${accent ?? 'var(--border)'}`,
     }}>
-      <div style={{ fontSize: 10, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '.5px', marginBottom: 6 }}>
+      <div style={{
+        display: 'flex', alignItems: 'center', gap: 4, fontSize: 10, color: 'var(--muted)',
+        textTransform: 'uppercase', letterSpacing: '.5px', marginBottom: 6,
+      }}>
         {label}
+        {tooltip && (
+          <span title={tooltip} style={{ cursor: 'help', fontSize: 11, opacity: .7 }}>ⓘ</span>
+        )}
       </div>
       <div style={{ fontSize: 22, fontWeight: 700, color: accent ?? 'var(--text)' }}>{value}</div>
       {sub && <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 4 }}>{sub}</div>}
-      {afterCredits && (
-        <div style={{ fontSize: 11, color: 'var(--green)', marginTop: 2, fontWeight: 600 }}>
-          After Credits: {afterCredits}
-        </div>
-      )}
+      {sub2 && <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 2 }}>{sub2}</div>}
     </div>
   )
 }
@@ -391,12 +393,16 @@ export default function Dashboard() {
   const todayKey = (() => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}` })()
   const latestCostMonth = costTotals[costTotals.length - 1]
   const isLatestCurrent = latestCostMonth?.month === todayKey
-  const currentMonthSpend = isLatestCurrent ? latestCostMonth : null
+  const currentMonthPartial = isLatestCurrent ? latestCostMonth : null
+  const currentMonthDaysElapsed = new Date().getDate()
   const lastFullMonth = isLatestCurrent ? costTotals[costTotals.length - 2] : latestCostMonth
   const priorToLastFull = isLatestCurrent ? costTotals[costTotals.length - 3] : costTotals[costTotals.length - 2]
-  const costMomDelta = lastFullMonth && priorToLastFull ? lastFullMonth.directCharges - priorToLastFull.directCharges : null
-  const costMomPct = costMomDelta !== null && priorToLastFull && priorToLastFull.directCharges !== 0
-    ? (costMomDelta / priorToLastFull.directCharges) * 100 : null
+  // MoM change is based on Total Billed (net = direct + indirect) — CloudHealth's "Last
+  // Month" figure — not direct charges alone, so it moves with the same number the KPI
+  // cards above it show.
+  const costMomDelta = lastFullMonth && priorToLastFull ? lastFullMonth.netCost - priorToLastFull.netCost : null
+  const costMomPct = costMomDelta !== null && priorToLastFull && priorToLastFull.netCost !== 0
+    ? (costMomDelta / priorToLastFull.netCost) * 100 : null
   const costHasData = !!costData && costData.monthlyTotals.length > 0
   const costChart = costHasData ? buildCostChartData(costData!) : null
 
@@ -510,18 +516,17 @@ export default function Dashboard() {
               {/* KPI cards */}
               <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 20 }}>
                 <CostKpiCard
-                  label="Current Month Spend"
-                  value={currentMonthSpend ? fmtMoney(currentMonthSpend.directCharges) : '—'}
+                  label="Direct Charges"
+                  value={lastFullMonth ? fmtMoney(lastFullMonth.directCharges) : '—'}
                   accent={COST_PALETTE[0]}
-                  sub={currentMonthSpend
-                    ? `Projected: ${fmtMoney(costData?.projectedCurrentMonth ?? 0)}`
-                    : (latestCostMonth ? `Not yet started (data through ${fmtCostMonth(latestCostMonth.month)})` : undefined)}
-                  afterCredits={currentMonthSpend ? fmtMoney(currentMonthSpend.netCost) : undefined}
+                  sub={lastFullMonth ? `${fmtCostMonth(lastFullMonth.month)} — raw AWS service costs` : undefined}
                 />
                 <CostKpiCard
-                  label="Last Full Month Spend"
-                  value={lastFullMonth ? fmtMoney(lastFullMonth.directCharges) : '—'}
-                  sub={lastFullMonth ? fmtCostMonth(lastFullMonth.month) : undefined}
+                  label="Total Billed (Net)"
+                  value={lastFullMonth ? fmtMoney(lastFullMonth.netCost) : '—'}
+                  accent={COST_PALETTE[0]}
+                  sub="Direct + indirect charges"
+                  tooltip="Direct AWS service charges plus indirect charges (backup storage, data transfer, support fees). Matches CloudHealth 'Last Month' figure."
                 />
                 <CostKpiCard
                   label="MoM Change"
@@ -535,6 +540,15 @@ export default function Dashboard() {
                   label="Savings Plan Coverage"
                   value={costData ? `${costData.savingsPlanCoverage.coveragePct.toFixed(1)}%` : '—'}
                   accent={COST_PALETTE[0]}
+                  sub="EC2 compute covered by Savings Plan"
+                />
+                <CostKpiCard
+                  label="Current Month (Partial)"
+                  value={currentMonthPartial ? fmtMoney(currentMonthPartial.directCharges) : '—'}
+                  sub={currentMonthPartial
+                    ? `${fmtCostMonth(currentMonthPartial.month)} — partial (${currentMonthDaysElapsed} day${currentMonthDaysElapsed !== 1 ? 's' : ''})`
+                    : (latestCostMonth ? `Not yet started (data through ${fmtCostMonth(latestCostMonth.month)})` : undefined)}
+                  sub2={currentMonthPartial ? `Projected: ${fmtMoney(costData?.projectedCurrentMonth ?? 0)}` : undefined}
                 />
               </div>
 
@@ -542,6 +556,9 @@ export default function Dashboard() {
                 {/* Stacked cost history chart */}
                 <div className="card" style={{ flex: '13 1 520px', minWidth: 0, marginBottom: 0 }}>
                   <div className="card-title">AWS Cost History</div>
+                  <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: -8, marginBottom: 10 }}>
+                    Total Billed (net) per month — direct + indirect charges by service
+                  </div>
                   {costLoading && <Skeleton height={340} />}
                   {!costLoading && costChart && (
                     <ResponsiveContainer width="100%" height={340}>
