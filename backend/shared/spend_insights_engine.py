@@ -4,6 +4,7 @@ No Cosmos / HTTP / OpenAI dependencies here — everything takes already-fetched
 data in and returns plain dicts, so both the spend_insights function and
 export_report can share one implementation (mirrors shared/trend_engine.py).
 """
+import calendar
 import statistics
 from datetime import date
 from typing import Optional
@@ -19,6 +20,38 @@ _TREND_FLAT_PCT = 3.0  # |% change| at or below this reads as "flat"
 
 def _fmt(n: float) -> str:
     return f'${n:,.2f}'
+
+
+def is_partial_month(month_str: str, today: Optional[date] = None) -> tuple:
+    """(is_partial, completion_ratio) — e.g. Jul 23 of 31 days -> (True, 0.7419...).
+
+    Only the real, still-in-progress calendar month is ever partial; a past month
+    is always (False, 1.0) even if it happens to have sparse/incomplete billing
+    data — "partial" here means calendar-partial, not data-partial.
+    """
+    today = today or date.today()
+    year, month = int(month_str[:4]), int(month_str[5:7])
+    if year == today.year and month == today.month:
+        days_in_month = calendar.monthrange(year, month)[1]
+        return True, today.day / days_in_month
+    return False, 1.0
+
+
+def project_amount(amount: float, completion_ratio: float) -> float:
+    """Scale a partial-month amount up to a full-month run-rate estimate."""
+    if completion_ratio <= 0:
+        return amount
+    return amount / completion_ratio
+
+
+def month_day_counts(month_str: str, today: Optional[date] = None) -> tuple:
+    """(days_elapsed, days_in_month) — for a past month, days_elapsed == days_in_month."""
+    today = today or date.today()
+    year, month = int(month_str[:4]), int(month_str[5:7])
+    days_in_month = calendar.monthrange(year, month)[1]
+    if year == today.year and month == today.month:
+        return today.day, days_in_month
+    return days_in_month, days_in_month
 
 
 def last_n_months(end_month: str, n: int) -> list:
@@ -49,19 +82,33 @@ def priority_for(estimated_savings: float) -> str:
 
 # ── anomaly detection ──────────────────────────────────────────────────────────
 
-def compute_anomalies(by_service: list, months_in_window: list) -> list:
-    """One entry per flagged service: new_service > statistical_anomaly > spike."""
+def compute_anomalies(
+    by_service: list,
+    months_in_window: list,
+    is_partial: bool = False,
+    completion_ratio: float = 1.0,
+) -> list:
+    """One entry per flagged service: new_service > statistical_anomaly > spike.
+
+    When the current month is still in progress, its raw to-date amount is
+    projected to a full-month run rate before any comparison — otherwise a
+    perfectly normal mid-month total reads as a huge anomaly against full prior
+    months. The rolling average itself is built only from prior (always-closed)
+    months, so it never needs projecting.
+    """
     if len(months_in_window) < 2:
         return []
 
     current_month = months_in_window[-1]
     prior_months = months_in_window[:-1]
     anomalies = []
+    tag = ' (projected)' if is_partial else ''
 
     for svc in by_service:
         service = svc['service']
         month_vals = svc.get('months', {})
-        current = month_vals.get(current_month, 0.0)
+        current_raw = month_vals.get(current_month, 0.0)
+        current = project_amount(current_raw, completion_ratio) if is_partial else current_raw
         prior_vals = [month_vals.get(m, 0.0) for m in prior_months]
 
         if current <= 0:
@@ -74,9 +121,10 @@ def compute_anomalies(by_service: list, months_in_window: list) -> list:
                 'rollingAvg': 0.0,
                 'variance': None,
                 'type': 'new_service',
+                'isProjected': is_partial,
                 'explanation': (
                     f'{service} had no recorded spend in the prior {len(prior_vals)} '
-                    f'month(s) but shows {_fmt(current)} this month.'
+                    f'month(s) but shows {_fmt(current)}{tag} this month.'
                 ),
             })
             continue
@@ -93,8 +141,9 @@ def compute_anomalies(by_service: list, months_in_window: list) -> list:
                     'rollingAvg': round(avg, 2),
                     'variance': round(stdev, 2),
                     'type': 'statistical_anomaly',
+                    'isProjected': is_partial,
                     'explanation': (
-                        f'{service} is {_fmt(current)} this month, above its rolling average of '
+                        f'{service} is {_fmt(current)}{tag} this month, above its rolling average of '
                         f'{_fmt(avg)} plus two standard deviations ({_fmt(threshold)}).'
                     ),
                 })
@@ -110,8 +159,10 @@ def compute_anomalies(by_service: list, months_in_window: list) -> list:
                     'rollingAvg': round(prev, 2),
                     'variance': round(mom_pct, 1),
                     'type': 'spike',
+                    'isProjected': is_partial,
                     'explanation': (
-                        f'{service} rose {mom_pct:.0f}% month-over-month, from {_fmt(prev)} to {_fmt(current)}.'
+                        f'{service} rose {mom_pct:.0f}% month-over-month, '
+                        f'from {_fmt(prev)} to {_fmt(current)}{tag}.'
                     ),
                 })
 
@@ -121,7 +172,13 @@ def compute_anomalies(by_service: list, months_in_window: list) -> list:
 
 # ── savings plan coverage ──────────────────────────────────────────────────────
 
-def compute_coverage_analysis(savings_plan_coverage: dict, by_service: list, months_in_window: list) -> dict:
+def compute_coverage_analysis(
+    savings_plan_coverage: dict,
+    by_service: list,
+    months_in_window: list,
+    is_partial: bool = False,
+    completion_ratio: float = 1.0,
+) -> dict:
     current_pct = savings_plan_coverage.get('coveragePct', 0.0)
     covered = savings_plan_coverage.get('covered', 0.0)
     on_demand = savings_plan_coverage.get('onDemand', 0.0)
@@ -133,8 +190,18 @@ def compute_coverage_analysis(savings_plan_coverage: dict, by_service: list, mon
     gap_pct_points = max(0.0, SP_TARGET_PCT - current_pct)
     gap_amount = round(total_ec2_compute * gap_pct_points / 100, 2)
 
+    # Project the current month's contribution before it enters the variance calc — a
+    # partial month is naturally lower than a full one and would otherwise read as
+    # volatility that isn't really there, skewing the term recommendation toward 1-Year.
+    current_month = months_in_window[-1] if months_in_window else None
     ec2_compute = next((s for s in by_service if s['service'].strip().lower() == 'ec2 - compute'), None)
-    ec2_vals = [ec2_compute['months'].get(m, 0.0) for m in months_in_window] if ec2_compute else []
+    ec2_vals = []
+    if ec2_compute:
+        for m in months_in_window:
+            v = ec2_compute['months'].get(m, 0.0)
+            if is_partial and m == current_month:
+                v = project_amount(v, completion_ratio)
+            ec2_vals.append(v)
     ec2_vals = [v for v in ec2_vals if v > 0]
 
     if len(ec2_vals) >= 2 and statistics.mean(ec2_vals) > 0:
@@ -190,8 +257,19 @@ def _interpret(spend_trend: str, signal_trend: str) -> tuple:
     return f'Spend {spend_trend}, signal {signal_trend} — monitor', 'monitor'
 
 
-def compute_correlations(by_service: list, trend_records: list, months_in_window: list) -> list:
-    """trend_records: list of {serviceType, month (int), year (int), savingsTotal}."""
+def compute_correlations(
+    by_service: list,
+    trend_records: list,
+    months_in_window: list,
+    is_partial: bool = False,
+    completion_ratio: float = 1.0,
+) -> list:
+    """trend_records: list of {serviceType, month (int), year (int), savingsTotal}.
+
+    Only the spend side is projected when the current month is partial — CloudHealth
+    signal comes from a monthly CSV snapshot, not a continuous daily billing feed, so
+    it doesn't have the same intra-month completeness issue.
+    """
     if len(months_in_window) < 2:
         return []
 
@@ -218,7 +296,8 @@ def compute_correlations(by_service: list, trend_records: list, months_in_window
 
     correlations = []
     for cat in sorted(set(spend_by_cat_month) | set(signal_by_cat_month)):
-        spend_curr = spend_by_cat_month.get(cat, {}).get(current_month, 0.0)
+        spend_curr_raw = spend_by_cat_month.get(cat, {}).get(current_month, 0.0)
+        spend_curr = project_amount(spend_curr_raw, completion_ratio) if is_partial else spend_curr_raw
         spend_prev = spend_by_cat_month.get(cat, {}).get(prior_month, 0.0)
         signal_curr = signal_by_cat_month.get(cat, {}).get(current_month, 0.0)
         signal_prev = signal_by_cat_month.get(cat, {}).get(prior_month, 0.0)
@@ -250,9 +329,22 @@ def compute_opportunities(
     coverage_analysis: Optional[dict],
     current_month: str,
     skip_savings_plan_opportunity: bool = False,
+    is_partial: bool = False,
+    completion_ratio: float = 1.0,
 ) -> list:
     """coverage_analysis may be None when the customer has a commitment context instead —
-    the Savings Plan gap opportunity doesn't apply there and is skipped either way."""
+    the Savings Plan gap opportunity doesn't apply there and is skipped either way.
+
+    Every dollar figure here is a projected full-month run-rate estimate when the
+    current month is partial: the ratio-based checks (e.g. snapshot % of storage)
+    would hold either way since both sides scale together, but the absolute-dollar
+    check (WorkSpaces > $5K/mo) and the reported currentCost/estimatedSavings figures
+    need the projection to not understate a real opportunity mid-month.
+    """
+    def val(name: str) -> float:
+        raw = _svc_val(by_service, name, current_month)
+        return project_amount(raw, completion_ratio) if is_partial else raw
+
     opportunities = []
 
     if not skip_savings_plan_opportunity and coverage_analysis and coverage_analysis['currentPct'] < SP_TARGET_PCT:
@@ -269,8 +361,8 @@ def compute_opportunities(
             ),
         })
 
-    ebs_snapshot = _svc_val(by_service, 'EC2 - EBS Snapshot', current_month)
-    ebs_storage = _svc_val(by_service, 'EBS - Storage', current_month)
+    ebs_snapshot = val('EC2 - EBS Snapshot')
+    ebs_storage = val('EBS - Storage')
     if ebs_storage > 0 and ebs_snapshot / ebs_storage > 0.15:
         est = round(ebs_snapshot * 0.30, 2)
         opportunities.append({
@@ -285,8 +377,8 @@ def compute_opportunities(
             ),
         })
 
-    ec2_transfer = _svc_val(by_service, 'EC2 - Transfer', current_month)
-    ec2_compute = _svc_val(by_service, 'EC2 - Compute', current_month)
+    ec2_transfer = val('EC2 - Transfer')
+    ec2_compute = val('EC2 - Compute')
     if ec2_compute > 0 and ec2_transfer / ec2_compute > 0.05:
         est = round(ec2_transfer * 0.20, 2)
         opportunities.append({
@@ -301,8 +393,8 @@ def compute_opportunities(
             ),
         })
 
-    rds_backup = _svc_val(by_service, 'RDS - Charged Backup Usage', current_month)
-    rds_compute = _svc_val(by_service, 'RDS - Compute', current_month)
+    rds_backup = val('RDS - Charged Backup Usage')
+    rds_compute = val('RDS - Compute')
     if rds_compute > 0 and rds_backup / rds_compute > 0.20:
         est = round(rds_backup * 0.25, 2)
         opportunities.append({
@@ -314,9 +406,10 @@ def compute_opportunities(
             'action': 'RDS backup cost is high relative to compute spend — review backup retention window.',
         })
 
-    workspaces_total = sum(
+    workspaces_total_raw = sum(
         s.get('months', {}).get(current_month, 0.0) for s in by_service if 'workspaces' in s['service'].lower()
     )
+    workspaces_total = project_amount(workspaces_total_raw, completion_ratio) if is_partial else workspaces_total_raw
     if workspaces_total > 5000:
         est = round(workspaces_total * 0.15, 2)
         opportunities.append({
@@ -349,8 +442,21 @@ def months_between(end_date_str: str, as_of_month: str) -> int:
     return (end_year - as_of_year) * 12 + (end_month_n - as_of_month_n)
 
 
-def compute_commitment_utilization(commitment: dict, monthly_totals: list, months_in_window: list) -> dict:
-    """monthly_totals: cost_summary['monthlyTotals'] shape — [{month, netCost, ...}, ...]."""
+def compute_commitment_utilization(
+    commitment: dict,
+    monthly_totals: list,
+    months_in_window: list,
+    is_partial: bool = False,
+    completion_ratio: float = 1.0,
+) -> dict:
+    """monthly_totals: cost_summary['monthlyTotals'] shape — [{month, netCost, ...}, ...].
+
+    utilizationPct/overUnderAmount compare the monthly obligation — a flat, full-month
+    figure — against projected spend, not raw to-date spend, or a partial current
+    month always reads as under-utilized regardless of actual run rate. actualSpend
+    is kept alongside projectedSpend so the caller can still show "what's billed so
+    far" without it driving the utilization math.
+    """
     monthly_obligation = commitment.get('commitmentMonthlyObligation')
     if not monthly_obligation:
         annual = commitment.get('commitmentAnnualValue') or 0.0
@@ -359,12 +465,18 @@ def compute_commitment_utilization(commitment: dict, monthly_totals: list, month
     totals_by_month = {m['month']: m for m in monthly_totals}
     current_month = months_in_window[-1]
     actual_spend = totals_by_month.get(current_month, {}).get('netCost', 0.0)
+    projected_spend = project_amount(actual_spend, completion_ratio) if is_partial else actual_spend
 
-    utilization_pct = round(actual_spend / monthly_obligation * 100, 1) if monthly_obligation else None
-    over_under_amount = round(actual_spend - monthly_obligation, 2) if monthly_obligation else None
+    utilization_pct = round(projected_spend / monthly_obligation * 100, 1) if monthly_obligation else None
+    over_under_amount = round(projected_spend - monthly_obligation, 2) if monthly_obligation else None
 
     trailing_months = months_in_window[-3:]
-    trailing_vals = [totals_by_month.get(m, {}).get('netCost', 0.0) for m in trailing_months]
+    trailing_vals = []
+    for m in trailing_months:
+        v = totals_by_month.get(m, {}).get('netCost', 0.0)
+        if is_partial and m == current_month:
+            v = project_amount(v, completion_ratio)
+        trailing_vals.append(v)
     trailing_3mo_avg = round(statistics.mean(trailing_vals), 2) if trailing_vals else None
     under_utilization_risk = bool(
         trailing_3mo_avg is not None and monthly_obligation and trailing_3mo_avg < monthly_obligation
@@ -378,6 +490,9 @@ def compute_commitment_utilization(commitment: dict, monthly_totals: list, month
         'commitmentType': commitment.get('commitmentType'),
         'monthlyObligation': round(monthly_obligation, 2),
         'actualSpend': round(actual_spend, 2),
+        'projectedSpend': round(projected_spend, 2),
+        'isPartial': is_partial,
+        'completionRatio': round(completion_ratio, 4),
         'utilizationPct': utilization_pct,
         'overUnderAmount': over_under_amount,
         'trailing3MoAvg': trailing_3mo_avg,

@@ -213,6 +213,10 @@ export interface CostMonthlyTotal {
   directCharges: number
   indirectCharges: number
   netCost: number
+  isPartial: boolean
+  completionRatio: number
+  projectedDirectCharges: number
+  projectedNetCost: number
 }
 
 export interface CostByService {
@@ -225,6 +229,8 @@ export interface CostTopService {
   service: string
   currentMonth: number
   previousMonth: number
+  isPartial: boolean
+  projectedAmount: number
   momDelta: number
   momPct: number | null
 }
@@ -241,6 +247,8 @@ export interface CostHistorySummary {
   topServices: CostTopService[]
   savingsPlanCoverage: SavingsPlanCoverage
   projectedCurrentMonth: number
+  isPartial: boolean
+  completionRatio: number
 }
 
 export interface Report {
@@ -265,6 +273,7 @@ export interface SpendAnomaly {
   rollingAvg: number
   variance: number | null
   type: AnomalyType
+  isProjected: boolean
   explanation: string
 }
 
@@ -307,6 +316,9 @@ export interface SpendCommitmentUtilization {
   commitmentType: CommitmentType | null
   monthlyObligation: number
   actualSpend: number
+  projectedSpend: number
+  isPartial: boolean
+  completionRatio: number
   utilizationPct: number | null
   overUnderAmount: number | null
   trailing3MoAvg: number | null
@@ -328,8 +340,11 @@ export interface SpendInsightsResponse {
   narrative: string
   month: string
   totalSpend: number
+  actualSpendToDate: number
   momChange: number
   momPct: number | null
+  isPartial: boolean
+  completionRatio: number
   generatedAt: string
   cached: boolean
 }

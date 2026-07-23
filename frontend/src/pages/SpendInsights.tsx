@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { Cell, Pie, PieChart, ResponsiveContainer } from 'recharts'
 import { fetchSpendInsights, saveSpendInsightsToReport } from '../api'
+import PartialMonthBanner from '../components/PartialMonthBanner'
 import { useCustomer } from '../context/CustomerContext'
 import type { AnomalyType, CorrelationStatus, OpportunityPriority, SpendInsightsResponse } from '../types'
 
@@ -135,8 +136,11 @@ function CommitmentGauge({ utilizationPct }: { utilizationPct: number }) {
 }
 
 function AnomalyCard({
-  service, currentAmount, type, explanation, variance,
-}: { service: string; currentAmount: number; type: AnomalyType; explanation: string; variance: number | null }) {
+  service, currentAmount, type, explanation, variance, isProjected,
+}: {
+  service: string; currentAmount: number; type: AnomalyType; explanation: string
+  variance: number | null; isProjected: boolean
+}) {
   const severity = anomalySeverity(type, variance)
   const bg = severity === 'red' ? '#FDE7E9' : '#FFF4CE'
   const border = severity === 'red' ? '#F4B8BD' : '#F5DFA0'
@@ -150,7 +154,10 @@ function AnomalyCard({
         <div style={{ fontWeight: 700, fontSize: 14 }}>{service}</div>
         <span className={`badge ${badgeCls}`}>{ANOMALY_TYPE_LABEL[type]}</span>
       </div>
-      <div style={{ fontSize: 18, fontWeight: 700 }}>{fmtMoney(currentAmount)}</div>
+      <div style={{ fontSize: 18, fontWeight: 700 }}>
+        {fmtMoney(currentAmount)}
+        {isProjected && <span style={{ fontSize: 11, fontWeight: 400, color: 'var(--muted)', marginLeft: 6 }}>(projected)</span>}
+      </div>
       <div style={{ fontSize: 12, lineHeight: 1.5, color: 'var(--text)' }}>{explanation}</div>
       <Link to="/" style={{ fontSize: 12, marginTop: 2 }}>View in Cost History →</Link>
     </div>
@@ -261,6 +268,10 @@ export default function SpendInsights() {
         </div>
       </div>
 
+      {insights?.isPartial && (
+        <PartialMonthBanner month={insights.month} completionRatio={insights.completionRatio} />
+      )}
+
       {!customerId && (
         <div className="card" style={{ textAlign: 'center', padding: '48px 20px' }}>
           <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 8 }}>No customer selected</div>
@@ -319,10 +330,24 @@ export default function SpendInsights() {
                       <div style={{ fontSize: 16, fontWeight: 700 }}>{fmtMoney(cu.monthlyObligation)}</div>
                     </div>
                     <div>
-                      <div style={{ fontSize: 10, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '.5px' }}>Actual Spend</div>
+                      <div style={{ fontSize: 10, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '.5px' }}>
+                        {cu.isPartial ? 'Actual Spend (to date)' : 'Actual Spend'}
+                      </div>
                       <div style={{ fontSize: 16, fontWeight: 700 }}>{fmtMoney(cu.actualSpend)}</div>
                     </div>
+                    {cu.isPartial && (
+                      <div>
+                        <div style={{ fontSize: 10, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '.5px' }}>Projected Full Month</div>
+                        <div style={{ fontSize: 16, fontWeight: 700, color: 'var(--blue)' }}>{fmtMoney(cu.projectedSpend)}</div>
+                      </div>
+                    )}
                   </div>
+                  {cu.isPartial && cu.utilizationPct !== null && (
+                    <div style={{ fontSize: 12, color: 'var(--muted)', marginBottom: 12 }}>
+                      To date: {fmtMoney(cu.actualSpend)} (projected full month: {fmtMoney(cu.projectedSpend)} ={' '}
+                      {cu.utilizationPct.toFixed(1)}% of obligation)
+                    </div>
+                  )}
 
                   {cu.overUnderAmount !== null && (
                     <div style={{
@@ -435,6 +460,11 @@ export default function SpendInsights() {
                     })}
                   </tbody>
                 </table>
+              </div>
+            )}
+            {insights.isPartial && insights.correlations.length > 0 && (
+              <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 8 }}>
+                Spend trend for {fmtMonthLabel(insights.month)} is based on projected full-month spend, not to-date actuals.
               </div>
             )}
           </div>

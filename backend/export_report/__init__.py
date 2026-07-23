@@ -267,9 +267,15 @@ def _build_docx(
         tbl_spend.style = 'Table Grid'
         _tbl_header(tbl_spend, ['Month', 'Direct Charges', 'Indirect Charges', 'Net Cost'])
         for m in cost_summary['monthlyTotals']:
+            month_label = f"{m['month']} (partial, {m['completionRatio'] * 100:.0f}% complete)" \
+                if m.get('isPartial') else m['month']
             _tbl_row(tbl_spend, [
-                m['month'], _fmt(m['directCharges']), _fmt(m['indirectCharges']), _fmt(m['netCost']),
+                month_label, _fmt(m['directCharges']), _fmt(m['indirectCharges']), _fmt(m['netCost']),
             ])
+        if any(m.get('isPartial') for m in cost_summary['monthlyTotals']):
+            _para(doc, 'The partial month above shows actual spend to date, not a projection; '
+                       'MoM comparisons elsewhere in this report use the projected full-month figure.',
+                  size=9, color=_GREY)
         _para(doc)
 
         _h2(doc, '3.2 Top 10 Services by Cost')
@@ -709,14 +715,17 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
             if months_in_window:
                 window_summary = cosmos_client.get_cost_history_summary(customer_id, months_in_window)
                 si_by_service = window_summary['byService']
+                si_is_partial = window_summary['isPartial']
+                si_completion_ratio = window_summary['completionRatio']
                 all_trends_for_insights = cosmos_client.list_trends(customer_id)
                 trend_dicts = [
                     {'serviceType': t.serviceType, 'month': t.month, 'year': t.year, 'savingsTotal': t.savingsTotal}
                     for t in all_trends_for_insights
                     if f'{t.year:04d}-{t.month:02d}' in months_in_window
                 ]
-                si_anomalies = compute_anomalies(si_by_service, months_in_window)
-                si_correlations = compute_correlations(si_by_service, trend_dicts, months_in_window)
+                si_anomalies = compute_anomalies(si_by_service, months_in_window, si_is_partial, si_completion_ratio)
+                si_correlations = compute_correlations(
+                    si_by_service, trend_dicts, months_in_window, si_is_partial, si_completion_ratio)
 
                 si_commitment = (customer.settings or {}).get('commitment') or {}
                 si_commitment_type = si_commitment.get('commitmentType')
@@ -725,14 +734,19 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
                 si_commitment_utilization = None
                 if si_has_commitment:
                     si_commitment_utilization = compute_commitment_utilization(
-                        si_commitment, window_summary['monthlyTotals'], months_in_window)
+                        si_commitment, window_summary['monthlyTotals'], months_in_window,
+                        si_is_partial, si_completion_ratio,
+                    )
                 else:
                     si_coverage = compute_coverage_analysis(
-                        window_summary['savingsPlanCoverage'], si_by_service, months_in_window)
+                        window_summary['savingsPlanCoverage'], si_by_service, months_in_window,
+                        si_is_partial, si_completion_ratio,
+                    )
 
                 si_opportunities = compute_opportunities(
                     si_by_service, si_coverage, months_in_window[-1],
                     skip_savings_plan_opportunity=si_has_commitment,
+                    is_partial=si_is_partial, completion_ratio=si_completion_ratio,
                 )
                 report_for_month = locals().get('generated')
                 saved_narrative = (

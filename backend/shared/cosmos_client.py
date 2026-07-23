@@ -1,4 +1,3 @@
-import calendar
 import os
 import re
 import uuid
@@ -8,6 +7,7 @@ from typing import Optional
 from azure.cosmos import CosmosClient, PartitionKey, exceptions
 
 from .models import CostHistoryRecord, Customer, ExceptionRecord, Report, Template, TrendData, Upload
+from .spend_insights_engine import is_partial_month, project_amount
 
 
 def _utc(dt):
@@ -509,6 +509,8 @@ def get_cost_history_summary(customer_id: str, months: list) -> dict:
         'topServices': [],
         'savingsPlanCoverage': {'covered': 0.0, 'onDemand': 0.0, 'coveragePct': 0.0},
         'projectedCurrentMonth': 0.0,
+        'isPartial': False,
+        'completionRatio': 1.0,
     }
     months_sorted = sorted(set(months))
     if not months_sorted:
@@ -539,23 +541,48 @@ def get_cost_history_summary(customer_id: str, months: list) -> dict:
         by_service_month.setdefault(r.service, {})
         by_service_month[r.service][r.month] = by_service_month[r.service].get(r.month, 0.0) + r.amount
 
-    monthly_totals = [
-        {
+    # ── partial-month detection ────────────────────────────────────────────────
+    # The most recent month can be a real, still-in-progress calendar month with
+    # fewer days of billing data than every prior (closed) month — comparing its
+    # raw to-date total against a full prior month understates MoM change and can
+    # look like a cost decrease that isn't real. is_partial/completion_ratio drive
+    # every MoM figure below; a closed month is always (False, 1.0), a no-op.
+    current_month = months_sorted[-1]
+    previous_month = months_sorted[-2] if len(months_sorted) >= 2 else None
+    is_partial, completion_ratio = is_partial_month(current_month)
+
+    monthly_totals = []
+    for m in months_sorted:
+        direct = round(direct_by_month.get(m, 0.0), 2)
+        indirect = round(indirect_by_month.get(m, 0.0), 2)
+        net = round(direct + indirect, 2)
+        m_is_partial = is_partial and m == current_month
+        ratio = completion_ratio if m_is_partial else 1.0
+        monthly_totals.append({
             'month': m,
-            'directCharges': round(direct_by_month.get(m, 0.0), 2),
-            'indirectCharges': round(indirect_by_month.get(m, 0.0), 2),
-            'netCost': round(direct_by_month.get(m, 0.0) + indirect_by_month.get(m, 0.0), 2),
-        }
-        for m in months_sorted
-    ]
+            'directCharges': direct,
+            'indirectCharges': indirect,
+            'netCost': net,
+            'isPartial': m_is_partial,
+            'completionRatio': round(ratio, 4),
+            'projectedDirectCharges': round(project_amount(direct, ratio), 2) if m_is_partial else direct,
+            'projectedNetCost': round(project_amount(net, ratio), 2) if m_is_partial else net,
+        })
 
     # ── by-service breakdown + trend ───────────────────────────────────────────
+    # Trend compares a service's most recent two data points; if the most recent
+    # one lands in the partial current month, project it before comparing so a
+    # mid-month snapshot doesn't read as a decline against a full prior month.
     by_service = []
     for service, month_vals in by_service_month.items():
-        ordered = [month_vals[m] for m in months_sorted if m in month_vals]
+        present_months = [m for m in months_sorted if m in month_vals]
+        ordered = [month_vals[m] for m in present_months]
         trend = 'flat'
         if len(ordered) >= 2:
-            delta = ordered[-1] - ordered[-2]
+            last_val = ordered[-1]
+            if is_partial and present_months[-1] == current_month:
+                last_val = project_amount(last_val, completion_ratio)
+            delta = last_val - ordered[-2]
             threshold = max(50.0, abs(ordered[-2]) * 0.03)
             if delta > threshold:
                 trend = 'up'
@@ -569,22 +596,25 @@ def get_cost_history_summary(customer_id: str, months: list) -> dict:
     by_service.sort(key=lambda s: -sum(s['months'].values()))
 
     # ── top services this month ────────────────────────────────────────────────
-    current_month = months_sorted[-1]
-    previous_month = months_sorted[-2] if len(months_sorted) >= 2 else None
+    # currentMonth stays the raw to-date figure (what's actually been billed so
+    # far); projectedAmount is the run-rate estimate MoM math is based on.
     top_services = []
     for service, month_vals in by_service_month.items():
         curr = month_vals.get(current_month, 0.0)
         prev = month_vals.get(previous_month, 0.0) if previous_month else 0.0
-        mom_delta = curr - prev
+        curr_projected = project_amount(curr, completion_ratio) if is_partial else curr
+        mom_delta = curr_projected - prev
         mom_pct = (mom_delta / prev * 100) if prev else None
         top_services.append({
             'service': service,
             'currentMonth': round(curr, 2),
             'previousMonth': round(prev, 2),
+            'isPartial': is_partial,
+            'projectedAmount': round(curr_projected, 2),
             'momDelta': round(mom_delta, 2),
             'momPct': round(mom_pct, 2) if mom_pct is not None else None,
         })
-    top_services.sort(key=lambda s: -s['currentMonth'])
+    top_services.sort(key=lambda s: -s['projectedAmount'])
     top_services = top_services[:10]
 
     # ── savings plan coverage (current month) ──────────────────────────────────
@@ -595,20 +625,16 @@ def get_cost_history_summary(customer_id: str, months: list) -> dict:
     # part of this ratio). "On demand" is the direct EC2 - Compute total itself —
     # Savings Plan usage is billed as a negation against that same line, so the
     # negation's magnitude is already part of ec2_compute_direct, not on top of it.
+    # Not projected: both sides are the same to-date period, so the ratio between
+    # them holds regardless of how much of the month has elapsed.
     covered = abs(savings_plan_by_month.get(current_month, 0.0))
     ec2_compute_direct = ec2_compute_by_month.get(current_month, 0.0)
     on_demand = max(0.0, ec2_compute_direct)
     coverage_pct = round((covered / (covered + on_demand) * 100), 1) if (covered + on_demand) > 0 else 0.0
     direct_total = direct_by_month.get(current_month, 0.0)
 
-    # ── projected current month spend ──────────────────────────────────────────
-    # Only extrapolated when the latest month is the real, still-in-progress calendar
-    # month; a fully closed month is reported as-is with no projection applied.
-    today = datetime.now(timezone.utc).date()
-    projected_current_month = round(direct_total, 2)
-    if current_month == today.strftime('%Y-%m') and today.day > 0:
-        days_in_month = calendar.monthrange(today.year, today.month)[1]
-        projected_current_month = round(direct_total / today.day * days_in_month, 2)
+    projected_current_month = round(project_amount(direct_total, completion_ratio), 2) if is_partial \
+        else round(direct_total, 2)
 
     return {
         'monthlyTotals': monthly_totals,
@@ -620,4 +646,6 @@ def get_cost_history_summary(customer_id: str, months: list) -> dict:
             'coveragePct': coverage_pct,
         },
         'projectedCurrentMonth': projected_current_month,
+        'isPartial': is_partial,
+        'completionRatio': round(completion_ratio, 4),
     }

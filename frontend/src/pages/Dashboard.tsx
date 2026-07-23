@@ -5,6 +5,7 @@ import {
   ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis,
 } from 'recharts'
 import { fetchCostHistory, fetchDashboardNarrative, fetchTrends, patchCommitment } from '../api'
+import PartialMonthBanner from '../components/PartialMonthBanner'
 import { useCustomer } from '../context/CustomerContext'
 import type { CostHistorySummary, DashboardNarrativeResponse, DataSnapshot, SavingsPlanCoverage, ServiceRow, TrendsResponse } from '../types'
 
@@ -151,6 +152,7 @@ function ExceptionDeltaWidget({ snapshot }: { snapshot: DataSnapshot }) {
 }
 
 function buildCostChartData(costData: CostHistorySummary) {
+  const monthlyByMonth = new Map(costData.monthlyTotals.map(m => [m.month, m]))
   const months = costData.monthlyTotals.map(m => m.month)
   const totals = costData.byService
     .map(s => ({ service: s.service, total: Object.values(s.months).reduce((a, b) => a + b, 0) }))
@@ -161,11 +163,17 @@ function buildCostChartData(costData: CostHistorySummary) {
     return idx >= 0 ? COST_PALETTE[idx] : COST_OTHER_COLOR
   }
   const chartData = months.map(month => {
-    const row: Record<string, number | string> = { month: fmtCostMonth(month) }
+    const meta = monthlyByMonth.get(month)
+    const isPartial = meta?.isPartial ?? false
+    const ratio = isPartial ? (meta?.completionRatio ?? 1) : 1
+    // The partial month's bar shows PROJECTED full-month height, not raw to-date —
+    // otherwise it always looks artificially short next to a complete prior month.
+    const row: Record<string, number | string | boolean> = { month: fmtCostMonth(month), isPartial }
     for (const svc of top) row[svc] = 0
     row.Other = 0
     for (const s of costData.byService) {
-      const v = s.months[month] ?? 0
+      const raw = s.months[month] ?? 0
+      const v = isPartial && ratio > 0 ? raw / ratio : raw
       if (top.includes(s.service)) {
         row[s.service] = (row[s.service] as number) + v
       } else {
@@ -178,8 +186,13 @@ function buildCostChartData(costData: CostHistorySummary) {
 }
 
 function CostKpiCard({
-  label, value, accent, sub, sub2, tooltip,
-}: { label: string; value: string; accent?: string; sub?: string; sub2?: string; tooltip?: string }) {
+  label, value, accent, sub, subColor, sub2, sub3, tooltip, tooltip3,
+}: {
+  label: string; value: string; accent?: string
+  sub?: string; subColor?: string; sub2?: string
+  sub3?: string; tooltip3?: string
+  tooltip?: string
+}) {
   return (
     <div style={{
       flex: '1 1 200px', padding: '14px 16px', background: 'var(--surface)',
@@ -196,8 +209,18 @@ function CostKpiCard({
         )}
       </div>
       <div style={{ fontSize: 22, fontWeight: 700, color: accent ?? 'var(--text)' }}>{value}</div>
-      {sub && <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 4 }}>{sub}</div>}
+      {sub && (
+        <div style={{ fontSize: subColor ? 13 : 11, fontWeight: subColor ? 700 : 400, color: subColor ?? 'var(--muted)', marginTop: 4 }}>
+          {sub}
+        </div>
+      )}
       {sub2 && <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 2 }}>{sub2}</div>}
+      {sub3 && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 11, color: 'var(--muted)', marginTop: 2 }}>
+          <span>{sub3}</span>
+          {tooltip3 && <span title={tooltip3} style={{ cursor: 'help', opacity: .7 }}>ⓘ</span>}
+        </div>
+      )}
     </div>
   )
 }
@@ -228,7 +251,10 @@ function ComputeCoverageWidget({ coverage }: { coverage: SavingsPlanCoverage }) 
   )
 }
 
-function TopServicesTable({ topServices }: { topServices: CostHistorySummary['topServices'] }) {
+function TopServicesTable({
+  topServices, currentMonthLabel,
+}: { topServices: CostHistorySummary['topServices']; currentMonthLabel: string }) {
+  const anyPartial = topServices.some(s => s.isPartial)
   return (
     <div className="card" style={{ marginBottom: 0, flex: '2 1 420px' }}>
       <div className="card-title">Top Services This Month</div>
@@ -238,7 +264,13 @@ function TopServicesTable({ topServices }: { topServices: CostHistorySummary['to
         <div className="table-wrap">
           <table>
             <thead>
-              <tr><th>Service</th><th>Current Month</th><th>Last Month</th><th>MoM Delta</th><th>Trend</th></tr>
+              <tr>
+                <th>Service</th>
+                <th>{currentMonthLabel}{anyPartial ? ' (proj.)' : ''}</th>
+                <th>Last Month</th>
+                <th>MoM Delta</th>
+                <th>Trend</th>
+              </tr>
             </thead>
             <tbody>
               {topServices.map(s => {
@@ -246,10 +278,13 @@ function TopServicesTable({ topServices }: { topServices: CostHistorySummary['to
                 const down = s.momDelta < -0.5
                 const cls = up ? 'up' : down ? 'down' : 'flat' // .up=red (cost increase), .down=green (cost decrease)
                 const arrow = up ? '▲' : down ? '▼' : '—'
+                const displayAmount = s.isPartial ? s.projectedAmount : s.currentMonth
                 return (
                   <tr key={s.service}>
                     <td style={{ fontWeight: 600 }}>{s.service}</td>
-                    <td>{fmtMoney(s.currentMonth)}</td>
+                    <td style={s.isPartial ? { fontStyle: 'italic', color: 'var(--blue)' } : undefined}>
+                      {fmtMoney(displayAmount)}
+                    </td>
                     <td>{fmtMoney(s.previousMonth)}</td>
                     <td><span className={cls}>{arrow} {fmtMoney(Math.abs(s.momDelta))}</span></td>
                     <td>
@@ -264,6 +299,11 @@ function TopServicesTable({ topServices }: { topServices: CostHistorySummary['to
               })}
             </tbody>
           </table>
+        </div>
+      )}
+      {anyPartial && (
+        <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 8 }}>
+          {currentMonthLabel} figures are projected to full month based on the current daily run rate.
         </div>
       )}
     </div>
@@ -389,20 +429,28 @@ export default function Dashboard() {
   })()
 
   // ── Derived: cost history KPIs ────────────────────────────────────────────
+  // isPartial/completionRatio come from the backend (single source of truth for
+  // "how much of the current month has elapsed") — never recomputed client-side,
+  // so the KPI cards, chart, and Spend Insights page can't disagree with each other.
   const costTotals = costData?.monthlyTotals ?? []
-  const todayKey = (() => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}` })()
   const latestCostMonth = costTotals[costTotals.length - 1]
-  const isLatestCurrent = latestCostMonth?.month === todayKey
+  const isLatestCurrent = latestCostMonth?.isPartial ?? false
   const currentMonthPartial = isLatestCurrent ? latestCostMonth : null
-  const currentMonthDaysElapsed = new Date().getDate()
   const lastFullMonth = isLatestCurrent ? costTotals[costTotals.length - 2] : latestCostMonth
   const priorToLastFull = isLatestCurrent ? costTotals[costTotals.length - 3] : costTotals[costTotals.length - 2]
   // MoM change is based on Total Billed (net = direct + indirect) — CloudHealth's "Last
   // Month" figure — not direct charges alone, so it moves with the same number the KPI
-  // cards above it show.
+  // cards above it show. Both months here are always fully-closed months.
   const costMomDelta = lastFullMonth && priorToLastFull ? lastFullMonth.netCost - priorToLastFull.netCost : null
   const costMomPct = costMomDelta !== null && priorToLastFull && priorToLastFull.netCost !== 0
     ? (costMomDelta / priorToLastFull.netCost) * 100 : null
+
+  // Projected MoM: current (partial, projected) month vs. the last full month — NEVER
+  // the raw to-date amount, which is naturally smaller and would read as a cost drop.
+  const projectedMomDelta = currentMonthPartial && lastFullMonth
+    ? currentMonthPartial.projectedDirectCharges - lastFullMonth.directCharges : null
+  const projectedMomPct = projectedMomDelta !== null && lastFullMonth && lastFullMonth.directCharges !== 0
+    ? (projectedMomDelta / lastFullMonth.directCharges) * 100 : null
   const costHasData = !!costData && costData.monthlyTotals.length > 0
   const costChart = costHasData ? buildCostChartData(costData!) : null
 
@@ -412,6 +460,10 @@ export default function Dashboard() {
   return (
     <main className="page">
       <h1 className="page-title">Dashboard</h1>
+
+      {costData?.isPartial && latestCostMonth && (
+        <PartialMonthBanner month={latestCostMonth.month} completionRatio={latestCostMonth.completionRatio} />
+      )}
 
       {/* ── CONTROLS ─────────────────────────────────────────────────────── */}
       <div className="card">
@@ -544,11 +596,23 @@ export default function Dashboard() {
                 />
                 <CostKpiCard
                   label="Current Month (Partial)"
-                  value={currentMonthPartial ? fmtMoney(currentMonthPartial.directCharges) : '—'}
-                  sub={currentMonthPartial
-                    ? `${fmtCostMonth(currentMonthPartial.month)} — partial (${currentMonthDaysElapsed} day${currentMonthDaysElapsed !== 1 ? 's' : ''})`
+                  value={currentMonthPartial ? `${fmtMoney(currentMonthPartial.directCharges)} to date` : '—'}
+                  accent={COST_PALETTE[0]}
+                  sub={currentMonthPartial ? `Projected: ${fmtMoney(currentMonthPartial.projectedDirectCharges)}` : undefined}
+                  subColor={currentMonthPartial ? 'var(--blue)' : undefined}
+                  sub2={currentMonthPartial
+                    ? (() => {
+                        const [y, m] = currentMonthPartial.month.split('-').map(Number)
+                        const daysInMonth = new Date(y, m, 0).getDate()
+                        const daysElapsed = Math.round(currentMonthPartial.completionRatio * daysInMonth)
+                        return `${daysElapsed} of ${daysInMonth} days (${Math.round(currentMonthPartial.completionRatio * 100)}% complete)`
+                      })()
                     : (latestCostMonth ? `Not yet started (data through ${fmtCostMonth(latestCostMonth.month)})` : undefined)}
-                  sub2={currentMonthPartial ? `Projected: ${fmtMoney(costData?.projectedCurrentMonth ?? 0)}` : undefined}
+                  sub3={projectedMomDelta !== null
+                    ? `Projected MoM: ${projectedMomDelta >= 0 ? '+' : ''}${fmtMoney(projectedMomDelta)}` +
+                      (projectedMomPct !== null ? ` (${projectedMomPct >= 0 ? '+' : ''}${projectedMomPct.toFixed(1)}%)` : '')
+                    : undefined}
+                  tooltip3="MoM comparison uses projected full-month spend based on current daily run rate. Actual may vary."
                 />
               </div>
 
@@ -567,15 +631,32 @@ export default function Dashboard() {
                         <XAxis dataKey="month" tick={{ fontSize: 11 }} />
                         <YAxis tickFormatter={v => fmtK(v as number)} tick={{ fontSize: 11 }} width={56} />
                         <Tooltip
+                          labelFormatter={(label, payload) => {
+                            const isPartial = (payload?.[0]?.payload as { isPartial?: boolean } | undefined)?.isPartial
+                            return isPartial ? `${label} (projected)` : String(label)
+                          }}
                           formatter={(v, name) => [fmtMoney(Number(v ?? 0)), String(name)]}
                           contentStyle={{ fontSize: 12 }}
                         />
                         <Legend wrapperStyle={{ fontSize: 11, paddingTop: 8 }} />
                         {costChart.seriesKeys.map(svc => (
-                          <Bar key={svc} dataKey={svc} stackId="cost" fill={costChart.colorFor(svc)} />
+                          <Bar key={svc} dataKey={svc} stackId="cost" fill={costChart.colorFor(svc)}>
+                            {costChart.chartData.map((entry, idx) => (
+                              <Cell
+                                key={idx}
+                                fill={costChart.colorFor(svc)}
+                                fillOpacity={entry.isPartial ? 0.5 : 1}
+                              />
+                            ))}
+                          </Bar>
                         ))}
                       </BarChart>
                     </ResponsiveContainer>
+                  )}
+                  {costData?.isPartial && (
+                    <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 8, fontStyle: 'italic' }}>
+                      Current month bar shows projected full-month spend (lighter fill).
+                    </div>
                   )}
                 </div>
 
@@ -586,7 +667,10 @@ export default function Dashboard() {
               {/* Top Services table */}
               {costData && (
                 <div style={{ marginBottom: 20 }}>
-                  <TopServicesTable topServices={costData.topServices} />
+                  <TopServicesTable
+                    topServices={costData.topServices}
+                    currentMonthLabel={latestCostMonth ? fmtCostMonth(latestCostMonth.month) : 'Current Month'}
+                  />
                 </div>
               )}
             </>

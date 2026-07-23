@@ -15,6 +15,7 @@ from shared.spend_insights_engine import (
     compute_correlations,
     compute_opportunities,
     last_n_months,
+    month_day_counts,
 )
 
 _CACHE_TTL_HOURS = 24
@@ -189,23 +190,35 @@ def _handle_get(req: func.HttpRequest, customer_id: str) -> func.HttpResponse:
     commitment = (customer.settings or {}).get('commitment') or {}
     has_commitment = bool(commitment.get('commitmentType')) and commitment['commitmentType'] != 'None'
 
-    anomalies = compute_anomalies(by_service, months_in_window)
-    correlations = compute_correlations(by_service, trend_dicts, months_in_window)
+    # Single source of truth for "how much of the current month has elapsed" — computed
+    # once in get_cost_history_summary and threaded through every calculation below so
+    # a mid-month snapshot is never compared raw against a full prior month.
+    is_partial = cost_summary['isPartial']
+    completion_ratio = cost_summary['completionRatio']
+
+    anomalies = compute_anomalies(by_service, months_in_window, is_partial, completion_ratio)
+    correlations = compute_correlations(by_service, trend_dicts, months_in_window, is_partial, completion_ratio)
 
     coverage_analysis = None
     commitment_utilization = None
     if has_commitment:
         commitment_utilization = compute_commitment_utilization(
-            commitment, cost_summary['monthlyTotals'], months_in_window)
+            commitment, cost_summary['monthlyTotals'], months_in_window, is_partial, completion_ratio)
     else:
         coverage_analysis = compute_coverage_analysis(
-            cost_summary['savingsPlanCoverage'], by_service, months_in_window)
+            cost_summary['savingsPlanCoverage'], by_service, months_in_window, is_partial, completion_ratio)
 
     opportunities = compute_opportunities(
-        by_service, coverage_analysis, current_month, skip_savings_plan_opportunity=has_commitment)
+        by_service, coverage_analysis, current_month,
+        skip_savings_plan_opportunity=has_commitment,
+        is_partial=is_partial, completion_ratio=completion_ratio,
+    )
 
     monthly_totals = {m['month']: m for m in cost_summary['monthlyTotals']}
-    total_spend = monthly_totals.get(current_month, {}).get('netCost', 0.0)
+    current_totals = monthly_totals.get(current_month, {})
+    # NEVER use the raw current-month amount for MoM comparison — use the projected
+    # full-month figure, which equals the raw amount whenever the month is closed.
+    total_spend = current_totals.get('projectedNetCost', current_totals.get('netCost', 0.0))
     prior_month = months_in_window[-2] if len(months_in_window) >= 2 else None
     prior_spend = monthly_totals.get(prior_month, {}).get('netCost', 0.0) if prior_month else 0.0
     mom_change = total_spend - prior_spend
@@ -222,6 +235,15 @@ def _handle_get(req: func.HttpRequest, customer_id: str) -> func.HttpResponse:
         correlations=correlations,
         opportunities=opportunities,
     )
+    if is_partial:
+        days_elapsed, days_in_month = month_day_counts(current_month)
+        completion_pct = round(completion_ratio * 100, 1)
+        prompt += (
+            f"\n\nCurrent month ({current_month}) is {days_elapsed} of {days_in_month} days complete "
+            f"({completion_pct}% of month). The spend figures shown are PROJECTED to full month based "
+            f"on daily run rate. Do not flag partial month spend as anomalies — compare only projected "
+            f"figures to prior full months."
+        )
     if exc_summary and exc_summary.get('totalCount', 0) > 0:
         prompt += (
             f"\n\nException floor context: {exc_summary['totalCount']} servers excluded from "
@@ -260,8 +282,11 @@ def _handle_get(req: func.HttpRequest, customer_id: str) -> func.HttpResponse:
         'narrative': narrative,
         'month': current_month,
         'totalSpend': round(total_spend, 2),
+        'actualSpendToDate': round(current_totals.get('netCost', 0.0), 2),
         'momChange': round(mom_change, 2),
         'momPct': round(mom_pct, 2) if mom_pct is not None else None,
+        'isPartial': is_partial,
+        'completionRatio': round(completion_ratio, 4),
         'generatedAt': now_utc.isoformat(),
         'cached': False,
     }
