@@ -47,6 +47,43 @@ def _handle_post(req: func.HttpRequest) -> func.HttpResponse:
     return cors_response(customer.to_dict(), 201)
 
 
+_COMMITMENT_TYPES = {'EDP', 'SavingsPlan', 'EnterpriseAgreement', 'None'}
+_COMMITMENT_FIELDS = [
+    'commitmentType', 'commitmentAnnualValue', 'commitmentTermYears',
+    'commitmentStartDate', 'commitmentEndDate', 'commitmentMonthlyObligation',
+    'discountRate',
+]
+
+
+def _handle_patch(req: func.HttpRequest, customer_id: str) -> func.HttpResponse:
+    if not customer_id:
+        return cors_response({'error': 'customerId is required'}, 400)
+
+    try:
+        body = req.get_json()
+    except ValueError:
+        return cors_response({'error': 'Request body must be valid JSON'}, 400)
+
+    customer = cosmos_client.get_customer(customer_id)
+    if customer is None:
+        return cors_response({'error': f'Customer {customer_id!r} not found'}, 404)
+
+    commitment_type = body.get('commitmentType')
+    if commitment_type is not None and commitment_type not in _COMMITMENT_TYPES:
+        return cors_response(
+            {'error': f'commitmentType must be one of {sorted(_COMMITMENT_TYPES)}'}, 400,
+        )
+
+    commitment = dict(customer.settings.get('commitment', {}))
+    for field in _COMMITMENT_FIELDS:
+        if field in body:
+            commitment[field] = body[field]
+    customer.settings = {**customer.settings, 'commitment': commitment}
+
+    cosmos_client.update_customer(customer)
+    return cors_response(customer.to_dict())
+
+
 def _handle_delete(customer_id: str) -> func.HttpResponse:
     if not customer_id:
         return cors_response({'error': 'customerId is required'}, 400)
@@ -64,6 +101,8 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
             return _handle_delete(customer_id)
         if req.method == 'POST':
             return _handle_post(req)
+        if req.method == 'PATCH':
+            return _handle_patch(req, customer_id)
         return _handle_get(customer_id)
     except Exception as exc:
         logging.exception('customers unhandled error')

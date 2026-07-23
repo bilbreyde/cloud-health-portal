@@ -91,6 +91,49 @@ function CoverageDonut({ currentPct, targetPct }: { currentPct: number; targetPc
   )
 }
 
+// Green 90-110%, yellow 80-90% or 110-120%, red <80% or >120%.
+function utilizationColor(pct: number): string {
+  if (pct >= 90 && pct <= 110) return 'var(--green)'
+  if ((pct >= 80 && pct < 90) || (pct > 110 && pct <= 120)) return '#9D5D00'
+  return 'var(--red)'
+}
+
+function CommitmentGauge({ utilizationPct }: { utilizationPct: number }) {
+  const color = utilizationColor(utilizationPct)
+  const filled = Math.min(100, Math.max(0, utilizationPct))
+  const data = [
+    { name: 'Utilized', value: filled },
+    { name: 'Remaining', value: Math.max(0, 100 - filled) },
+  ]
+  return (
+    <div style={{ position: 'relative', width: '100%', height: 200 }}>
+      <ResponsiveContainer width="100%" height="100%">
+        <PieChart>
+          <Pie
+            data={data}
+            dataKey="value"
+            innerRadius="68%"
+            outerRadius="90%"
+            startAngle={90}
+            endAngle={-270}
+            stroke="none"
+          >
+            <Cell fill={color} />
+            <Cell fill={TRACK_COLOR} />
+          </Pie>
+        </PieChart>
+      </ResponsiveContainer>
+      <div style={{
+        position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column',
+        alignItems: 'center', justifyContent: 'center', pointerEvents: 'none',
+      }}>
+        <div style={{ fontSize: 30, fontWeight: 700, color }}>{utilizationPct.toFixed(1)}%</div>
+        <div style={{ fontSize: 11, color: 'var(--muted)' }}>of monthly obligation</div>
+      </div>
+    </div>
+  )
+}
+
 function AnomalyCard({
   service, currentAmount, type, explanation, variance,
 }: { service: string; currentAmount: number; type: AnomalyType; explanation: string; variance: number | null }) {
@@ -201,6 +244,7 @@ export default function SpendInsights() {
   }
 
   const cov = insights?.coverageAnalysis
+  const cu = insights?.commitmentUtilization
   const opportunities = insights?.opportunities ?? []
 
   return (
@@ -260,8 +304,68 @@ export default function SpendInsights() {
             )}
           </div>
 
-          {/* ── SECTION 2: Savings Plan Optimization ──────────────────────── */}
-          {cov && (
+          {/* ── SECTION 2: Commitment Utilization (large-commitment customers) ── */}
+          {cu && cu.utilizationPct !== null && (
+            <div className="card">
+              <div className="card-title">Commitment Utilization</div>
+              <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap', alignItems: 'center' }}>
+                <div style={{ flex: '1 1 220px', maxWidth: 260 }}>
+                  <CommitmentGauge utilizationPct={cu.utilizationPct} />
+                </div>
+                <div style={{ flex: '2 1 320px' }}>
+                  <div style={{ display: 'flex', gap: 20, marginBottom: 12, flexWrap: 'wrap' }}>
+                    <div>
+                      <div style={{ fontSize: 10, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '.5px' }}>Monthly Obligation</div>
+                      <div style={{ fontSize: 16, fontWeight: 700 }}>{fmtMoney(cu.monthlyObligation)}</div>
+                    </div>
+                    <div>
+                      <div style={{ fontSize: 10, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '.5px' }}>Actual Spend</div>
+                      <div style={{ fontSize: 16, fontWeight: 700 }}>{fmtMoney(cu.actualSpend)}</div>
+                    </div>
+                  </div>
+
+                  {cu.overUnderAmount !== null && (
+                    <div style={{
+                      padding: '12px 14px', background: 'var(--bg)', borderRadius: 6,
+                      border: '1px solid var(--border)', marginBottom: 12, fontSize: 13, lineHeight: 1.6,
+                    }}>
+                      <strong style={{ color: cu.overUnderAmount < 0 ? 'var(--green)' : 'var(--red)' }}>
+                        {cu.overUnderAmount < 0 ? '−' : '+'}{fmtMoney(cu.overUnderAmount)}
+                      </strong>{' '}
+                      {cu.overUnderAmount < 0 ? 'under' : 'over'} obligation this month.{' '}
+                      {cu.trailing3MoAvg !== null && (
+                        <>Trailing 3-month average: <strong>{fmtMoney(cu.trailing3MoAvg)}</strong> — {cu.underUtilizationRisk ? 'at risk' : 'on track'}.</>
+                      )}
+                    </div>
+                  )}
+
+                  {cu.monthsRemaining !== null && (
+                    <div style={{
+                      padding: '12px 14px', border: '1px solid var(--border)', borderRadius: 6,
+                      borderLeft: `3px solid ${cu.expiryWarning ? 'var(--red)' : 'var(--blue)'}`, marginBottom: 12,
+                    }}>
+                      <div style={{ fontSize: 12, fontWeight: 600 }}>
+                        Commitment expires in {cu.monthsRemaining} month{cu.monthsRemaining !== 1 ? 's' : ''}
+                        {cu.commitmentEndDate ? ` (${fmtMonthLabel(cu.commitmentEndDate.slice(0, 7))})` : ''}
+                      </div>
+                      {cu.expiryWarning && (
+                        <div style={{ fontSize: 12, color: 'var(--red)', marginTop: 4 }}>
+                          Renewal decision needed — current pricing vs. market rate analysis recommended.
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  <div style={{ fontSize: 11, color: 'var(--muted)' }}>
+                    {cu.commitmentType} commitment{cu.discountRate ? ` · ~${(cu.discountRate * 100).toFixed(0)}% discount vs. on-demand` : ''}
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* ── SECTION 2 (alt): Savings Plan Optimization ────────────────── */}
+          {!cu && cov && (
             <div className="card">
               <div className="card-title">Savings Plan Optimization</div>
               <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap', alignItems: 'center' }}>

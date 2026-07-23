@@ -1,9 +1,21 @@
+export type CommitmentType = 'EDP' | 'SavingsPlan' | 'EnterpriseAgreement' | 'None'
+
+export interface CommitmentContext {
+  commitmentType: CommitmentType
+  commitmentAnnualValue?: number
+  commitmentTermYears?: number
+  commitmentStartDate?: string
+  commitmentEndDate?: string
+  commitmentMonthlyObligation?: number
+  discountRate?: number
+}
+
 export interface Customer {
   id: string
   name: string
   slug: string
   created_at: string
-  settings: Record<string, unknown>
+  settings: Record<string, unknown> & { commitment?: CommitmentContext }
 }
 
 export interface MonthlyTotal {
@@ -291,9 +303,26 @@ export interface SpendOpportunity {
   action: string
 }
 
+export interface SpendCommitmentUtilization {
+  commitmentType: CommitmentType | null
+  monthlyObligation: number
+  actualSpend: number
+  utilizationPct: number | null
+  overUnderAmount: number | null
+  trailing3MoAvg: number | null
+  underUtilizationRisk: boolean
+  monthsRemaining: number | null
+  expiryWarning: boolean
+  commitmentEndDate: string | null
+  commitmentAnnualValue?: number
+  commitmentTermYears?: number
+  discountRate?: number
+}
+
 export interface SpendInsightsResponse {
   anomalies: SpendAnomaly[]
-  coverageAnalysis: SpendCoverageAnalysis
+  coverageAnalysis: SpendCoverageAnalysis | null
+  commitmentUtilization: SpendCommitmentUtilization | null
   correlations: SpendCorrelation[]
   opportunities: SpendOpportunity[]
   narrative: string

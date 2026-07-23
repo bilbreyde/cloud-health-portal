@@ -1,4 +1,4 @@
-import type { CostHistoryImportResult, CostHistorySummary, Customer, DashboardNarrativeResponse, ExceptionRecord, ExceptionSummary, ImportReportResponse, Report, ReportResponse, SpendInsightsResponse, TrendsResponse, UploadRecord, UploadResult } from './types'
+import type { CommitmentContext, CostHistoryImportResult, CostHistorySummary, Customer, DashboardNarrativeResponse, ExceptionRecord, ExceptionSummary, ImportReportResponse, Report, ReportResponse, SpendInsightsResponse, TrendsResponse, UploadRecord, UploadResult } from './types'
 
 const BASE = (import.meta.env.VITE_API_URL ?? '') + '/api'
 
@@ -20,6 +20,14 @@ export function createCustomer(body: { name: string; slug: string }): Promise<Cu
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
+  })
+}
+
+export function updateCustomerCommitment(customerId: string, commitment: Partial<CommitmentContext>): Promise<Customer> {
+  return request<Customer>(`${BASE}/customers/${customerId}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(commitment),
   })
 }
 

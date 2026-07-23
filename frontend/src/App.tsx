@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { BrowserRouter, NavLink, Route, Routes } from 'react-router-dom'
 import { createCustomer } from './api'
+import CustomerSettingsModal from './components/CustomerSettingsModal'
 import { useCustomer } from './context/CustomerContext'
 import Dashboard from './pages/Dashboard'
 import Exceptions from './pages/Exceptions'
@@ -103,6 +104,7 @@ function CustomerPill() {
   const { customers, selectedCustomer, setSelectedCustomer, refreshCustomers } = useCustomer()
   const [open, setOpen] = useState(false)
   const [showNewModal, setShowNewModal] = useState(false)
+  const [showSettingsModal, setShowSettingsModal] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -151,6 +153,19 @@ function CustomerPill() {
               </button>
             ))}
             <div style={{ borderTop: '1px solid var(--border)' }}>
+              {selectedCustomer && (
+                <button
+                  onClick={() => { setOpen(false); setShowSettingsModal(true) }}
+                  style={{
+                    display: 'block', width: '100%', textAlign: 'left',
+                    padding: '9px 16px', cursor: 'pointer', fontSize: 13,
+                    background: 'transparent', border: 'none', color: 'var(--text)',
+                    fontWeight: 500,
+                  }}
+                >
+                  ⚙ Customer Settings
+                </button>
+              )}
               <button
                 onClick={() => { setOpen(false); setShowNewModal(true) }}
                 style={{
@@ -174,6 +189,13 @@ function CustomerPill() {
             setSelectedCustomer(c)
             setShowNewModal(false)
           }}
+        />
+      )}
+      {showSettingsModal && selectedCustomer && (
+        <CustomerSettingsModal
+          customer={selectedCustomer}
+          onClose={() => setShowSettingsModal(false)}
+          onSaved={refreshCustomers}
         />
       )}
     </>

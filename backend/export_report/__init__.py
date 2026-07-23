@@ -14,6 +14,7 @@ from shared import blob_client, cosmos_client
 from shared.response_helpers import cors_options, cors_response
 from shared.spend_insights_engine import (
     compute_anomalies,
+    compute_commitment_utilization,
     compute_coverage_analysis,
     compute_correlations,
     compute_opportunities,
@@ -317,22 +318,49 @@ def _build_docx(
             _para(doc, 'No statistically significant anomalies detected this period.')
         _para(doc)
 
-        _h2(doc, '4.2 Savings Plan Coverage Recommendation')
         cov_sp = spend_insights.get('coverageAnalysis') or {}
-        if cov_sp:
-            tbl_sp = doc.add_table(rows=1, cols=2)
-            tbl_sp.style = 'Table Grid'
-            _tbl_header(tbl_sp, ['Metric', 'Value'])
-            _tbl_row(tbl_sp, ['Current Coverage', f"{cov_sp.get('currentPct', 0)}%"])
-            _tbl_row(tbl_sp, ['Target Coverage', f"{cov_sp.get('targetPct', 0)}%"])
-            _tbl_row(tbl_sp, ['Gap (On-Demand → Committed)', _fmt(cov_sp.get('gapAmount', 0))])
-            _tbl_row(tbl_sp, ['Estimated Additional Savings', _fmt(cov_sp.get('estimatedSavings', 0)) + '/mo'])
-            rec = cov_sp.get('recommendation') or {}
-            if rec.get('term'):
-                _tbl_row(tbl_sp, ['Recommended Term', rec['term']])
+        commitment_util = spend_insights.get('commitmentUtilization') or {}
+        if commitment_util:
+            _h2(doc, '4.2 Commitment Utilization')
+            tbl_cu = doc.add_table(rows=1, cols=2)
+            tbl_cu.style = 'Table Grid'
+            _tbl_header(tbl_cu, ['Metric', 'Value'])
+            _tbl_row(tbl_cu, ['Commitment Type', commitment_util.get('commitmentType') or '—'])
+            _tbl_row(tbl_cu, ['Monthly Obligation', _fmt(commitment_util.get('monthlyObligation', 0))])
+            _tbl_row(tbl_cu, ['Actual Spend This Month', _fmt(commitment_util.get('actualSpend', 0))])
+            _tbl_row(tbl_cu, ['Utilization %', f"{commitment_util.get('utilizationPct', 0)}%"])
+            over_under = commitment_util.get('overUnderAmount', 0)
+            _tbl_row(tbl_cu, [
+                'Over / Under Obligation',
+                (('+' if over_under >= 0 else '') + _fmt(over_under)),
+            ])
+            _tbl_row(tbl_cu, ['Trailing 3-Month Average', _fmt(commitment_util.get('trailing3MoAvg', 0))])
+            months_remaining = commitment_util.get('monthsRemaining')
+            if months_remaining is not None:
+                _tbl_row(tbl_cu, ['Months Remaining on Commitment', str(months_remaining)])
             _para(doc)
-            if rec.get('rationale'):
-                _para(doc, rec['rationale'])
+            if commitment_util.get('underUtilizationRisk'):
+                _para(doc, 'Risk: trailing 3-month average spend is below the monthly obligation — '
+                           'this commitment is at risk of under-utilization.')
+            if commitment_util.get('expiryWarning'):
+                _para(doc, 'Renewal decision needed — commitment expires within 6 months; '
+                           'a current pricing vs. market rate analysis is recommended.')
+        else:
+            _h2(doc, '4.2 Savings Plan Coverage Recommendation')
+            if cov_sp:
+                tbl_sp = doc.add_table(rows=1, cols=2)
+                tbl_sp.style = 'Table Grid'
+                _tbl_header(tbl_sp, ['Metric', 'Value'])
+                _tbl_row(tbl_sp, ['Current Coverage', f"{cov_sp.get('currentPct', 0)}%"])
+                _tbl_row(tbl_sp, ['Target Coverage', f"{cov_sp.get('targetPct', 0)}%"])
+                _tbl_row(tbl_sp, ['Gap (On-Demand → Committed)', _fmt(cov_sp.get('gapAmount', 0))])
+                _tbl_row(tbl_sp, ['Estimated Additional Savings', _fmt(cov_sp.get('estimatedSavings', 0)) + '/mo'])
+                rec = cov_sp.get('recommendation') or {}
+                if rec.get('term'):
+                    _tbl_row(tbl_sp, ['Recommended Term', rec['term']])
+                _para(doc)
+                if rec.get('rationale'):
+                    _para(doc, rec['rationale'])
         _para(doc)
 
         _h2(doc, '4.3 Top Additional Opportunities')
@@ -688,10 +716,24 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
                     if f'{t.year:04d}-{t.month:02d}' in months_in_window
                 ]
                 si_anomalies = compute_anomalies(si_by_service, months_in_window)
-                si_coverage = compute_coverage_analysis(
-                    window_summary['savingsPlanCoverage'], si_by_service, months_in_window)
                 si_correlations = compute_correlations(si_by_service, trend_dicts, months_in_window)
-                si_opportunities = compute_opportunities(si_by_service, si_coverage, months_in_window[-1])
+
+                si_commitment = (customer.settings or {}).get('commitment') or {}
+                si_commitment_type = si_commitment.get('commitmentType')
+                si_has_commitment = bool(si_commitment_type) and si_commitment_type != 'None'
+                si_coverage = None
+                si_commitment_utilization = None
+                if si_has_commitment:
+                    si_commitment_utilization = compute_commitment_utilization(
+                        si_commitment, window_summary['monthlyTotals'], months_in_window)
+                else:
+                    si_coverage = compute_coverage_analysis(
+                        window_summary['savingsPlanCoverage'], si_by_service, months_in_window)
+
+                si_opportunities = compute_opportunities(
+                    si_by_service, si_coverage, months_in_window[-1],
+                    skip_savings_plan_opportunity=si_has_commitment,
+                )
                 report_for_month = locals().get('generated')
                 saved_narrative = (
                     (report_for_month.extractedData or {}).get('spendInsightsNarrative', '')
@@ -700,6 +742,7 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
                 spend_insights = {
                     'anomalies': si_anomalies,
                     'coverageAnalysis': si_coverage,
+                    'commitmentUtilization': si_commitment_utilization,
                     'correlations': si_correlations,
                     'opportunities': si_opportunities,
                     'narrative': saved_narrative,

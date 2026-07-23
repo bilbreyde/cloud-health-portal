@@ -245,10 +245,17 @@ def _svc_val(by_service: list, name: str, month: str) -> float:
     return svc['months'].get(month, 0.0) if svc else 0.0
 
 
-def compute_opportunities(by_service: list, coverage_analysis: dict, current_month: str) -> list:
+def compute_opportunities(
+    by_service: list,
+    coverage_analysis: Optional[dict],
+    current_month: str,
+    skip_savings_plan_opportunity: bool = False,
+) -> list:
+    """coverage_analysis may be None when the customer has a commitment context instead —
+    the Savings Plan gap opportunity doesn't apply there and is skipped either way."""
     opportunities = []
 
-    if coverage_analysis['currentPct'] < SP_TARGET_PCT:
+    if not skip_savings_plan_opportunity and coverage_analysis and coverage_analysis['currentPct'] < SP_TARGET_PCT:
         est = coverage_analysis['estimatedSavings']
         opportunities.append({
             'category': 'Savings Plan',
@@ -330,3 +337,55 @@ def compute_opportunities(by_service: list, coverage_analysis: dict, current_mon
 
 def current_day_of_month(today: Optional[date] = None) -> int:
     return (today or date.today()).day
+
+
+# ── large-commitment (EDP / Enterprise Agreement) utilization ─────────────────
+
+def months_between(end_date_str: str, as_of_month: str) -> int:
+    """Whole months from as_of_month (YYYY-MM) to end_date_str (YYYY-MM-DD).
+    Negative if the end date is already in the past relative to as_of_month."""
+    end_year, end_month_n = (int(x) for x in end_date_str.split('-')[:2])
+    as_of_year, as_of_month_n = (int(x) for x in as_of_month.split('-'))
+    return (end_year - as_of_year) * 12 + (end_month_n - as_of_month_n)
+
+
+def compute_commitment_utilization(commitment: dict, monthly_totals: list, months_in_window: list) -> dict:
+    """monthly_totals: cost_summary['monthlyTotals'] shape — [{month, netCost, ...}, ...]."""
+    monthly_obligation = commitment.get('commitmentMonthlyObligation')
+    if not monthly_obligation:
+        annual = commitment.get('commitmentAnnualValue') or 0.0
+        monthly_obligation = annual / 12 if annual else 0.0
+
+    totals_by_month = {m['month']: m for m in monthly_totals}
+    current_month = months_in_window[-1]
+    actual_spend = totals_by_month.get(current_month, {}).get('netCost', 0.0)
+
+    utilization_pct = round(actual_spend / monthly_obligation * 100, 1) if monthly_obligation else None
+    over_under_amount = round(actual_spend - monthly_obligation, 2) if monthly_obligation else None
+
+    trailing_months = months_in_window[-3:]
+    trailing_vals = [totals_by_month.get(m, {}).get('netCost', 0.0) for m in trailing_months]
+    trailing_3mo_avg = round(statistics.mean(trailing_vals), 2) if trailing_vals else None
+    under_utilization_risk = bool(
+        trailing_3mo_avg is not None and monthly_obligation and trailing_3mo_avg < monthly_obligation
+    )
+
+    end_date = commitment.get('commitmentEndDate')
+    months_remaining = months_between(end_date, current_month) if end_date else None
+    expiry_warning = months_remaining is not None and months_remaining < 6
+
+    return {
+        'commitmentType': commitment.get('commitmentType'),
+        'monthlyObligation': round(monthly_obligation, 2),
+        'actualSpend': round(actual_spend, 2),
+        'utilizationPct': utilization_pct,
+        'overUnderAmount': over_under_amount,
+        'trailing3MoAvg': trailing_3mo_avg,
+        'underUtilizationRisk': under_utilization_risk,
+        'monthsRemaining': months_remaining,
+        'expiryWarning': expiry_warning,
+        'commitmentEndDate': end_date,
+        'commitmentAnnualValue': commitment.get('commitmentAnnualValue'),
+        'commitmentTermYears': commitment.get('commitmentTermYears'),
+        'discountRate': commitment.get('discountRate'),
+    }

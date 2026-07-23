@@ -10,6 +10,7 @@ from shared.models import Report
 from shared.response_helpers import cors_options, cors_response
 from shared.spend_insights_engine import (
     compute_anomalies,
+    compute_commitment_utilization,
     compute_coverage_analysis,
     compute_correlations,
     compute_opportunities,
@@ -61,12 +62,31 @@ def _fmt(n: float) -> str:
     return f'${n:,.2f}'
 
 
+def _commitment_context_block(commitment_utilization: dict) -> str:
+    cu = commitment_utilization
+    term = cu.get('commitmentTermYears')
+    ctype = cu.get('commitmentType')
+    annual = cu.get('commitmentAnnualValue') or 0.0
+    monthly = cu['monthlyObligation']
+    util_pct = cu['utilizationPct']
+    return f"""IMPORTANT CONTEXT: This customer has a {term}-year {ctype} commitment
+with AWS at {_fmt(annual)}/year ({_fmt(monthly)}/month).
+Current month spend is {_fmt(cu['actualSpend'])} ({util_pct}% of obligation).
+
+Do NOT recommend purchasing additional Savings Plans.
+Instead, analyze whether they are on track to consume their commitment.
+If under-utilizing, identify which workloads or projects could
+consume more of the committed capacity.
+If over-utilizing, identify what is driving spend above commitment."""
+
+
 def _build_prompt(
     customer_name: str,
     total_spend: float,
     mom_change: float,
     mom_pct: float | None,
-    coverage_pct: float,
+    coverage_pct: float | None,
+    commitment_utilization: dict | None,
     anomalies: list,
     correlations: list,
     opportunities: list,
@@ -89,12 +109,17 @@ def _build_prompt(
 
     mom_pct_str = f'{mom_pct:+.1f}%' if mom_pct is not None else 'n/a'
 
+    if commitment_utilization is not None:
+        coverage_line = _commitment_context_block(commitment_utilization)
+    else:
+        coverage_line = f'Savings Plan coverage: {coverage_pct:.1f}% (target: 70-80%)'
+
     return f"""You are a senior AWS cost optimization consultant analyzing spend data for {customer_name}.
 
 Billing data analysis:
 Total monthly spend: {_fmt(total_spend)}
 MoM change: {_fmt(mom_change)} ({mom_pct_str})
-Savings Plan coverage: {coverage_pct:.1f}% (target: 70-80%)
+{coverage_line}
 
 Anomalies detected:
 {anomaly_lines}
@@ -161,10 +186,23 @@ def _handle_get(req: func.HttpRequest, customer_id: str) -> func.HttpResponse:
     except Exception as exc:
         logging.warning('spend_insights: exception summary fetch failed (non-fatal): %s', exc)
 
+    commitment = (customer.settings or {}).get('commitment') or {}
+    has_commitment = bool(commitment.get('commitmentType')) and commitment['commitmentType'] != 'None'
+
     anomalies = compute_anomalies(by_service, months_in_window)
-    coverage_analysis = compute_coverage_analysis(cost_summary['savingsPlanCoverage'], by_service, months_in_window)
     correlations = compute_correlations(by_service, trend_dicts, months_in_window)
-    opportunities = compute_opportunities(by_service, coverage_analysis, current_month)
+
+    coverage_analysis = None
+    commitment_utilization = None
+    if has_commitment:
+        commitment_utilization = compute_commitment_utilization(
+            commitment, cost_summary['monthlyTotals'], months_in_window)
+    else:
+        coverage_analysis = compute_coverage_analysis(
+            cost_summary['savingsPlanCoverage'], by_service, months_in_window)
+
+    opportunities = compute_opportunities(
+        by_service, coverage_analysis, current_month, skip_savings_plan_opportunity=has_commitment)
 
     monthly_totals = {m['month']: m for m in cost_summary['monthlyTotals']}
     total_spend = monthly_totals.get(current_month, {}).get('netCost', 0.0)
@@ -178,7 +216,8 @@ def _handle_get(req: func.HttpRequest, customer_id: str) -> func.HttpResponse:
         total_spend=total_spend,
         mom_change=mom_change,
         mom_pct=mom_pct,
-        coverage_pct=coverage_analysis['currentPct'],
+        coverage_pct=coverage_analysis['currentPct'] if coverage_analysis else None,
+        commitment_utilization=commitment_utilization,
         anomalies=anomalies,
         correlations=correlations,
         opportunities=opportunities,
@@ -215,6 +254,7 @@ def _handle_get(req: func.HttpRequest, customer_id: str) -> func.HttpResponse:
     payload = {
         'anomalies': anomalies,
         'coverageAnalysis': coverage_analysis,
+        'commitmentUtilization': commitment_utilization,
         'correlations': correlations,
         'opportunities': opportunities,
         'narrative': narrative,
