@@ -12,6 +12,13 @@ from docx.shared import Inches, Pt, RGBColor
 
 from shared import blob_client, cosmos_client
 from shared.response_helpers import cors_options, cors_response
+from shared.spend_insights_engine import (
+    compute_anomalies,
+    compute_coverage_analysis,
+    compute_correlations,
+    compute_opportunities,
+    last_n_months,
+)
 from shared.trend_engine import compute_mom_delta
 
 _BLUE = RGBColor(0x17, 0x5E, 0x8C)
@@ -141,6 +148,7 @@ def _build_docx(
     exc_summary: dict | None,
     exc_records: list,
     cost_summary: dict | None,
+    spend_insights: dict | None,
     prev_next_steps: list,
     ongoing_next_steps: list,
     planned_savings: list,
@@ -289,8 +297,62 @@ def _build_docx(
         _para(doc, 'No AWS Cost History data imported for this customer yet.')
     doc.add_page_break()
 
-    # ── Section 4: Service Level Analysis ─────────────────────────────────────
-    _h1(doc, '4. Service Level Analysis')
+    # ── Section 4: AWS Spend Analysis & Optimization Opportunities ────────────
+    _h1(doc, '4. AWS Spend Analysis & Optimization Opportunities')
+    if spend_insights:
+        if spend_insights.get('narrative'):
+            _multiline(doc, spend_insights['narrative'])
+
+        _h2(doc, '4.1 Anomalies Detected')
+        anomalies = spend_insights.get('anomalies') or []
+        if anomalies:
+            tbl_anom = doc.add_table(rows=1, cols=4)
+            tbl_anom.style = 'Table Grid'
+            _tbl_header(tbl_anom, ['Service', 'Current Amount', 'Type', 'Explanation'])
+            for a in anomalies[:10]:
+                _tbl_row(tbl_anom, [
+                    a['service'], _fmt(a['currentAmount']), a['type'].replace('_', ' ').title(), a['explanation'],
+                ])
+        else:
+            _para(doc, 'No statistically significant anomalies detected this period.')
+        _para(doc)
+
+        _h2(doc, '4.2 Savings Plan Coverage Recommendation')
+        cov_sp = spend_insights.get('coverageAnalysis') or {}
+        if cov_sp:
+            tbl_sp = doc.add_table(rows=1, cols=2)
+            tbl_sp.style = 'Table Grid'
+            _tbl_header(tbl_sp, ['Metric', 'Value'])
+            _tbl_row(tbl_sp, ['Current Coverage', f"{cov_sp.get('currentPct', 0)}%"])
+            _tbl_row(tbl_sp, ['Target Coverage', f"{cov_sp.get('targetPct', 0)}%"])
+            _tbl_row(tbl_sp, ['Gap (On-Demand → Committed)', _fmt(cov_sp.get('gapAmount', 0))])
+            _tbl_row(tbl_sp, ['Estimated Additional Savings', _fmt(cov_sp.get('estimatedSavings', 0)) + '/mo'])
+            rec = cov_sp.get('recommendation') or {}
+            if rec.get('term'):
+                _tbl_row(tbl_sp, ['Recommended Term', rec['term']])
+            _para(doc)
+            if rec.get('rationale'):
+                _para(doc, rec['rationale'])
+        _para(doc)
+
+        _h2(doc, '4.3 Top Additional Opportunities')
+        opportunities = spend_insights.get('opportunities') or []
+        if opportunities:
+            tbl_opp = doc.add_table(rows=1, cols=5)
+            tbl_opp.style = 'Table Grid'
+            _tbl_header(tbl_opp, ['Priority', 'Service', 'Category', 'Est. Savings/mo', 'Recommended Action'])
+            for o in opportunities[:5]:
+                _tbl_row(tbl_opp, [
+                    o['priority'], o['service'], o['category'], _fmt(o['estimatedSavings']), o['action'],
+                ])
+        else:
+            _para(doc, 'No additional optimization opportunities identified beyond CloudHealth signal.')
+    else:
+        _para(doc, 'AI spend insights have not been generated for this customer yet.')
+    doc.add_page_break()
+
+    # ── Section 5: Service Level Analysis ─────────────────────────────────────
+    _h1(doc, '5. Service Level Analysis')
     _para(doc, 'Detailed breakdown of CloudHealth savings signal by AWS service for the reporting period.',
           space_after=8)
     tbl_svc = doc.add_table(rows=1, cols=5)
@@ -308,11 +370,11 @@ def _build_docx(
         ])
     doc.add_page_break()
 
-    # ── Section 5: Top Movers Analysis ────────────────────────────────────────
-    _h1(doc, '5. Top Movers Analysis')
+    # ── Section 6: Top Movers Analysis ────────────────────────────────────────
+    _h1(doc, '6. Top Movers Analysis')
     _multiline(doc, narrative.get('top_movers_analysis', ''))
 
-    _h2(doc, '5.1 Spending Increases')
+    _h2(doc, '6.1 Spending Increases')
     if top_movers_up:
         tbl_up = doc.add_table(rows=1, cols=3)
         tbl_up.style = 'Table Grid'
@@ -325,7 +387,7 @@ def _build_docx(
         _para(doc, 'No significant spending increases this period.')
     _para(doc)
 
-    _h2(doc, '5.2 Spending Decreases & Savings Realized')
+    _h2(doc, '6.2 Spending Decreases & Savings Realized')
     if top_movers_down:
         tbl_dn = doc.add_table(rows=1, cols=3)
         tbl_dn.style = 'Table Grid'
@@ -338,10 +400,10 @@ def _build_docx(
         _para(doc, 'No significant spending decreases this period.')
     doc.add_page_break()
 
-    # ── Section 6: EC2 Deep Dive ───────────────────────────────────────────────
+    # ── Section 7: EC2 Deep Dive ───────────────────────────────────────────────
     ec2_signal = curr_data.get('EC2', 0.0)
     if ec2_signal > 0:
-        _h1(doc, '6. EC2 Deep Dive')
+        _h1(doc, '7. EC2 Deep Dive')
         ec2_row = next((s for s in service_summary if s['serviceType'] == 'EC2'), None)
         if ec2_row:
             tbl_ec2 = doc.add_table(rows=1, cols=2)
@@ -354,12 +416,12 @@ def _build_docx(
             _tbl_row(tbl_ec2, ['Trend Direction', ec2_row.get('direction', '—')])
         _para(doc,
               'EC2 is typically the primary driver of cloud compute spend. '
-              'See the Exception Register (Section 8) for instances excluded from optimization scope.',
+              'See the Exception Register (Section 9) for instances excluded from optimization scope.',
               space_before=8)
         doc.add_page_break()
 
-    # ── Section 7: Savings Breakdown ──────────────────────────────────────────
-    _h1(doc, '7. Savings Breakdown')
+    # ── Section 8: Savings Breakdown ──────────────────────────────────────────
+    _h1(doc, '8. Savings Breakdown')
     _multiline(doc, narrative.get('exception_delta', ''))
 
     tbl_flow = doc.add_table(rows=1, cols=2)
@@ -373,10 +435,10 @@ def _build_docx(
         _tbl_row(tbl_flow, ['Remaining Opportunity', _fmt(remaining)])
     doc.add_page_break()
 
-    # ── Section 8: Exceptions ─────────────────────────────────────────────────
-    _h1(doc, '8. Exceptions Register')
+    # ── Section 9: Exceptions ─────────────────────────────────────────────────
+    _h1(doc, '9. Exceptions Register')
 
-    _h2(doc, '8.1 Exception Fleet Summary')
+    _h2(doc, '9.1 Exception Fleet Summary')
     if exc_summary and exc_summary.get('totalCount', 0) > 0:
         _para(doc,
               f"Total exception servers: {exc_summary['totalCount']} | "
@@ -399,7 +461,7 @@ def _build_docx(
         _para(doc, 'No exception servers recorded for this customer.')
     _para(doc)
 
-    _h2(doc, '8.2 Exception Register')
+    _h2(doc, '9.2 Exception Register')
     if exc_records:
         tbl_exc = doc.add_table(rows=1, cols=6)
         tbl_exc.style = 'Table Grid'
@@ -417,7 +479,7 @@ def _build_docx(
         _para(doc, 'No exception records on file.')
     _para(doc)
 
-    _h2(doc, '8.3 Exception & Signal Delta Analysis')
+    _h2(doc, '9.3 Exception & Signal Delta Analysis')
     exc_text = narrative.get('exception_delta', '')
     if not exc_text:
         exc_text = (
@@ -428,13 +490,13 @@ def _build_docx(
     _multiline(doc, exc_text)
     doc.add_page_break()
 
-    # ── Section 9: Risks & Constraints ────────────────────────────────────────
-    _h1(doc, '9. Risks & Constraints')
+    # ── Section 10: Risks & Constraints ────────────────────────────────────────
+    _h1(doc, '10. Risks & Constraints')
     _multiline(doc, narrative.get('risks_and_next_steps', ''))
     doc.add_page_break()
 
-    # ── Section 10: Next Steps ────────────────────────────────────────────────
-    _h1(doc, '10. Next Steps')
+    # ── Section 11: Next Steps ────────────────────────────────────────────────
+    _h1(doc, '11. Next Steps')
 
     _h2(doc, 'Before Next Meeting')
     if prev_next_steps:
@@ -452,8 +514,8 @@ def _build_docx(
         _para(doc, 'No recurring commitments defined.')
     doc.add_page_break()
 
-    # ── Section 11: Appendix ──────────────────────────────────────────────────
-    _h1(doc, '11. Appendix')
+    # ── Section 12: Appendix ──────────────────────────────────────────────────
+    _h1(doc, '12. Appendix')
 
     if joel_notes:
         _h2(doc, 'A. Engagement Manager Notes')
@@ -603,6 +665,48 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
     except Exception as exc:
         logging.warning('Cost history fetch failed (non-fatal): %s', exc)
 
+    # ── AI spend insights ──────────────────────────────────────────────────────
+    # Reuse the cached analysis from the spend-insights page if it's there; otherwise
+    # recompute the structured tables fresh (cheap — no AI call) rather than skip the
+    # section, but don't trigger a fresh AI narrative call during export.
+    spend_insights = None
+    try:
+        insights_month = f'{year:04d}-{month:02d}'
+        cached_insights = cosmos_client.get_report(f'insights-{customer_id}-{insights_month}', customer_id)
+        if cached_insights and cached_insights.source == 'spend_insights' and cached_insights.extractedData:
+            spend_insights = cached_insights.extractedData
+        elif cost_summary and cost_months:
+            window_months = last_n_months(insights_month, 6)
+            months_in_window = [m for m in window_months if m in cost_months]
+            if months_in_window:
+                window_summary = cosmos_client.get_cost_history_summary(customer_id, months_in_window)
+                si_by_service = window_summary['byService']
+                all_trends_for_insights = cosmos_client.list_trends(customer_id)
+                trend_dicts = [
+                    {'serviceType': t.serviceType, 'month': t.month, 'year': t.year, 'savingsTotal': t.savingsTotal}
+                    for t in all_trends_for_insights
+                    if f'{t.year:04d}-{t.month:02d}' in months_in_window
+                ]
+                si_anomalies = compute_anomalies(si_by_service, months_in_window)
+                si_coverage = compute_coverage_analysis(
+                    window_summary['savingsPlanCoverage'], si_by_service, months_in_window)
+                si_correlations = compute_correlations(si_by_service, trend_dicts, months_in_window)
+                si_opportunities = compute_opportunities(si_by_service, si_coverage, months_in_window[-1])
+                report_for_month = locals().get('generated')
+                saved_narrative = (
+                    (report_for_month.extractedData or {}).get('spendInsightsNarrative', '')
+                    if report_for_month else ''
+                )
+                spend_insights = {
+                    'anomalies': si_anomalies,
+                    'coverageAnalysis': si_coverage,
+                    'correlations': si_correlations,
+                    'opportunities': si_opportunities,
+                    'narrative': saved_narrative,
+                }
+    except Exception as exc:
+        logging.warning('Spend insights fetch failed (non-fatal): %s', exc)
+
     exc_floor = exc_summary['totalMonthlyCost'] if exc_summary else 0.0
     total_signal = sum(curr_data.values())
     net_addressable = max(0.0, total_signal - exc_floor)
@@ -630,6 +734,7 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
             exc_summary=exc_summary,
             exc_records=exc_records,
             cost_summary=cost_summary,
+            spend_insights=spend_insights,
             prev_next_steps=prev_next_steps,
             ongoing_next_steps=ongoing_next_steps,
             planned_savings=planned_savings,

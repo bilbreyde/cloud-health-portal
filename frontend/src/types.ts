@@ -244,3 +244,63 @@ export interface Report {
   source?: string
   extractedData?: ExtractedReportData
 }
+
+export type AnomalyType = 'new_service' | 'statistical_anomaly' | 'spike'
+
+export interface SpendAnomaly {
+  service: string
+  currentAmount: number
+  rollingAvg: number
+  variance: number | null
+  type: AnomalyType
+  explanation: string
+}
+
+export interface CoverageRecommendation {
+  term: string | null
+  rationale: string
+}
+
+export interface SpendCoverageAnalysis {
+  currentPct: number
+  targetPct: number
+  gapAmount: number
+  estimatedSavings: number
+  recommendation: CoverageRecommendation
+}
+
+export type TrendDirection = 'up' | 'down' | 'flat'
+export type CorrelationStatus = 'executing' | 'growing' | 'alert' | 'stable' | 'monitor'
+
+export interface SpendCorrelation {
+  service: string
+  spendTrend: TrendDirection
+  signalTrend: TrendDirection
+  interpretation: string
+  status: CorrelationStatus
+}
+
+export type OpportunityPriority = 'High' | 'Medium' | 'Low'
+
+export interface SpendOpportunity {
+  category: string
+  service: string
+  currentCost: number
+  estimatedSavings: number
+  priority: OpportunityPriority
+  action: string
+}
+
+export interface SpendInsightsResponse {
+  anomalies: SpendAnomaly[]
+  coverageAnalysis: SpendCoverageAnalysis
+  correlations: SpendCorrelation[]
+  opportunities: SpendOpportunity[]
+  narrative: string
+  month: string
+  totalSpend: number
+  momChange: number
+  momPct: number | null
+  generatedAt: string
+  cached: boolean
+}

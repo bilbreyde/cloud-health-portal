@@ -1,7 +1,8 @@
-import { useState } from 'react'
-import { buildReport } from '../api'
+import { useEffect, useState } from 'react'
+import { Link } from 'react-router-dom'
+import { buildReport, fetchSpendInsights, saveSpendInsightsToReport } from '../api'
 import { useCustomer } from '../context/CustomerContext'
-import type { NarrativeDraft, ReportResponse } from '../types'
+import type { NarrativeDraft, ReportResponse, SpendInsightsResponse } from '../types'
 
 const MONTH_NAMES = ['January','February','March','April','May','June',
                      'July','August','September','October','November','December']
@@ -51,6 +52,37 @@ export default function ReportBuilder() {
   const [exporting, setExporting]     = useState(false)
   const [exportMsg, setExportMsg]     = useState('')
   const [error, setError]             = useState('')
+
+  const [spendInsights, setSpendInsights]             = useState<SpendInsightsResponse | null>(null)
+  const [spendInsightsLoading, setSpendInsightsLoading] = useState(false)
+  const [spendInsightsDraft, setSpendInsightsDraft]     = useState('')
+  const [spendInsightsSaving, setSpendInsightsSaving]   = useState(false)
+  const [spendInsightsSaveMsg, setSpendInsightsSaveMsg] = useState('')
+
+  useEffect(() => {
+    if (!customerId) { setSpendInsights(null); return }
+    const monthKey = `${year}-${String(month).padStart(2, '0')}`
+    setSpendInsightsLoading(true)
+    fetchSpendInsights(customerId, { month: monthKey })
+      .then(res => { setSpendInsights(res); setSpendInsightsDraft(res.narrative) })
+      .catch(() => setSpendInsights(null))
+      .finally(() => setSpendInsightsLoading(false))
+  }, [customerId, month, year])
+
+  async function saveSpendInsights() {
+    if (!customerId || !spendInsights) return
+    setSpendInsightsSaving(true)
+    setSpendInsightsSaveMsg('')
+    try {
+      await saveSpendInsightsToReport(customerId, spendInsights.month, spendInsightsDraft)
+      setSpendInsightsSaveMsg('Saved to report')
+    } catch (e) {
+      setSpendInsightsSaveMsg(e instanceof Error ? e.message : String(e))
+    } finally {
+      setSpendInsightsSaving(false)
+      setTimeout(() => setSpendInsightsSaveMsg(''), 4000)
+    }
+  }
 
   async function generate() {
     if (!customerId) return
@@ -302,6 +334,73 @@ export default function ReportBuilder() {
               </div>
             </div>
           )}
+
+          {/* Spend Insights section */}
+          <div className="card">
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+              <div className="card-title" style={{ margin: 0 }}>
+                Spend Insights <span className="badge badge-blue" style={{ fontSize: 9, marginLeft: 6 }}>AI</span>
+              </div>
+              {spendInsightsLoading && <span className="spinner" style={{ borderTopColor: 'var(--blue)', width: 12, height: 12 }} />}
+            </div>
+
+            {!spendInsightsLoading && !spendInsights && (
+              <p style={{ color: 'var(--muted)', fontSize: 13 }}>
+                No spend insights available for {MONTH_ABBR[month - 1]} {year} yet.{' '}
+                <Link to="/spend-insights">Run the analysis</Link> on the Spend Insights page first.
+              </p>
+            )}
+
+            {spendInsights && (
+              <>
+                {spendInsights.anomalies.length > 0 && (
+                  <div style={{ marginBottom: 14 }}>
+                    <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '.5px', marginBottom: 6 }}>
+                      Anomalies ({spendInsights.anomalies.length})
+                    </div>
+                    {spendInsights.anomalies.slice(0, 5).map(a => (
+                      <div key={a.service} style={{ fontSize: 12, padding: '4px 0', borderBottom: '1px solid var(--border)' }}>
+                        <strong>{a.service}</strong> — {fmtMoney(a.currentAmount)} ({a.type.replace('_', ' ')})
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {spendInsights.opportunities.length > 0 && (
+                  <div style={{ marginBottom: 14 }}>
+                    <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '.5px', marginBottom: 6 }}>
+                      Opportunities ({spendInsights.opportunities.length})
+                    </div>
+                    {spendInsights.opportunities.slice(0, 5).map(o => (
+                      <div key={`${o.category}-${o.service}`} style={{ fontSize: 12, padding: '4px 0', borderBottom: '1px solid var(--border)' }}>
+                        [{o.priority}] <strong>{o.service}</strong> — est. {fmtMoney(o.estimatedSavings)}/mo — {o.action}
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                <div className="narrative-section" style={{ margin: 0 }}>
+                  <div className="narrative-label">Spend Insights Narrative</div>
+                  <textarea
+                    value={spendInsightsDraft}
+                    onChange={e => setSpendInsightsDraft(e.target.value)}
+                    style={{ width: '100%', minHeight: 140 }}
+                    placeholder="Auto-generated from spend insights analysis…"
+                  />
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 10 }}>
+                  <button className="btn btn-secondary" onClick={saveSpendInsights} disabled={spendInsightsSaving}>
+                    {spendInsightsSaving ? <><span className="spinner" /> Saving…</> : 'Save to Report'}
+                  </button>
+                  {spendInsightsSaveMsg && (
+                    <span style={{ fontSize: 12, color: spendInsightsSaveMsg === 'Saved to report' ? 'var(--green)' : 'var(--red)' }}>
+                      {spendInsightsSaveMsg}
+                    </span>
+                  )}
+                </div>
+              </>
+            )}
+          </div>
 
           <div className="grid-2">
             <div className="card">

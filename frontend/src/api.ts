@@ -1,4 +1,4 @@
-import type { CostHistoryImportResult, CostHistorySummary, Customer, DashboardNarrativeResponse, ExceptionRecord, ExceptionSummary, ImportReportResponse, Report, ReportResponse, TrendsResponse, UploadRecord, UploadResult } from './types'
+import type { CostHistoryImportResult, CostHistorySummary, Customer, DashboardNarrativeResponse, ExceptionRecord, ExceptionSummary, ImportReportResponse, Report, ReportResponse, SpendInsightsResponse, TrendsResponse, UploadRecord, UploadResult } from './types'
 
 const BASE = (import.meta.env.VITE_API_URL ?? '') + '/api'
 
@@ -172,4 +172,27 @@ export function fetchCostHistory(
   if (params?.endMonth) qs.set('endMonth', params.endMonth)
   const suffix = qs.toString() ? `?${qs}` : ''
   return request<CostHistorySummary>(`${BASE}/cost-history/${customerId}${suffix}`)
+}
+
+export function fetchSpendInsights(
+  customerId: string,
+  params?: { month?: string; bust?: boolean },
+): Promise<SpendInsightsResponse> {
+  const qs = new URLSearchParams()
+  if (params?.month) qs.set('month', params.month)
+  if (params?.bust) qs.set('bust', 'true')
+  const suffix = qs.toString() ? `?${qs}` : ''
+  return request<SpendInsightsResponse>(`${BASE}/spend-insights/${customerId}${suffix}`)
+}
+
+export function saveSpendInsightsToReport(
+  customerId: string,
+  month: string,
+  narrative: string,
+): Promise<{ success: boolean }> {
+  return request(`${BASE}/spend-insights/${customerId}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ month, narrative }),
+  })
 }

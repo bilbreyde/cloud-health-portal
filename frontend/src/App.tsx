@@ -6,6 +6,7 @@ import Dashboard from './pages/Dashboard'
 import Exceptions from './pages/Exceptions'
 import History from './pages/History'
 import ReportBuilder from './pages/ReportBuilder'
+import SpendInsights from './pages/SpendInsights'
 import Upload from './pages/Upload'
 import Uploads from './pages/Uploads'
 import type { Customer } from './types'
@@ -191,6 +192,9 @@ function NavBar() {
       <NavLink to="/upload" className={({ isActive }) => 'nav-link' + (isActive ? ' active' : '')}>
         Upload
       </NavLink>
+      <NavLink to="/spend-insights" className={({ isActive }) => 'nav-link' + (isActive ? ' active' : '')}>
+        Spend Insights
+      </NavLink>
       <NavLink to="/report" className={({ isActive }) => 'nav-link' + (isActive ? ' active' : '')}>
         Report Builder
       </NavLink>
@@ -217,6 +221,7 @@ export default function App() {
       <Routes>
         <Route path="/" element={<Dashboard />} />
         <Route path="/upload" element={<Upload />} />
+        <Route path="/spend-insights" element={<SpendInsights />} />
         <Route path="/report" element={<ReportBuilder />} />
         <Route path="/history" element={<History />} />
         <Route path="/uploads" element={<Uploads />} />
