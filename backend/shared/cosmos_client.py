@@ -7,6 +7,8 @@ from typing import Optional
 from azure.cosmos import CosmosClient, PartitionKey, exceptions
 
 from .models import CostHistoryRecord, Customer, ExceptionRecord, Report, Template, TrendData, Upload
+from .cost_classifier import classify_service
+from .cost_classifier import project_amount as classify_project_amount
 from .spend_insights_engine import is_partial_month, project_amount
 
 
@@ -570,18 +572,20 @@ def get_cost_history_summary(customer_id: str, months: list) -> dict:
         })
 
     # ── by-service breakdown + trend ───────────────────────────────────────────
-    # Trend compares a service's most recent two data points; if the most recent
-    # one lands in the partial current month, project it before comparing so a
-    # mid-month snapshot doesn't read as a decline against a full prior month.
+    # Trend compares a service's most recent two data points; if the most recent one
+    # lands in the partial current month, project it (classification-aware — a
+    # one-time charge like Amazon Marketplace is never scaled up) before comparing,
+    # so a mid-month snapshot doesn't read as a decline against a full prior month.
     by_service = []
     for service, month_vals in by_service_month.items():
+        classification = classify_service(service)
         present_months = [m for m in months_sorted if m in month_vals]
         ordered = [month_vals[m] for m in present_months]
         trend = 'flat'
         if len(ordered) >= 2:
             last_val = ordered[-1]
             if is_partial and present_months[-1] == current_month:
-                last_val = project_amount(last_val, completion_ratio)
+                last_val, _ = classify_project_amount(last_val, service, completion_ratio)
             delta = last_val - ordered[-2]
             threshold = max(50.0, abs(ordered[-2]) * 0.03)
             if delta > threshold:
@@ -592,17 +596,23 @@ def get_cost_history_summary(customer_id: str, months: list) -> dict:
             'service': service,
             'months': {m: round(v, 2) for m, v in month_vals.items()},
             'trend': trend,
+            'pattern': classification['pattern'],
         })
     by_service.sort(key=lambda s: -sum(s['months'].values()))
 
     # ── top services this month ────────────────────────────────────────────────
     # currentMonth stays the raw to-date figure (what's actually been billed so
-    # far); projectedAmount is the run-rate estimate MoM math is based on.
+    # far); projectedAmount is the classification-aware run-rate estimate MoM math
+    # is based on — a one-time charge is reported unscaled even here.
     top_services = []
     for service, month_vals in by_service_month.items():
+        classification = classify_service(service)
         curr = month_vals.get(current_month, 0.0)
         prev = month_vals.get(previous_month, 0.0) if previous_month else 0.0
-        curr_projected = project_amount(curr, completion_ratio) if is_partial else curr
+        if is_partial:
+            curr_projected, _ = classify_project_amount(curr, service, completion_ratio)
+        else:
+            curr_projected = curr
         mom_delta = curr_projected - prev
         mom_pct = (mom_delta / prev * 100) if prev else None
         top_services.append({
@@ -611,6 +621,7 @@ def get_cost_history_summary(customer_id: str, months: list) -> dict:
             'previousMonth': round(prev, 2),
             'isPartial': is_partial,
             'projectedAmount': round(curr_projected, 2),
+            'pattern': classification['pattern'],
             'momDelta': round(mom_delta, 2),
             'momPct': round(mom_pct, 2) if mom_pct is not None else None,
         })

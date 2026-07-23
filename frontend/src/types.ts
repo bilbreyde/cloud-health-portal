@@ -223,6 +223,7 @@ export interface CostByService {
   service: string
   months: Record<string, number>
   trend: 'up' | 'down' | 'flat'
+  pattern: ChargePattern
 }
 
 export interface CostTopService {
@@ -231,6 +232,7 @@ export interface CostTopService {
   previousMonth: number
   isPartial: boolean
   projectedAmount: number
+  pattern: ChargePattern
   momDelta: number
   momPct: number | null
 }
@@ -265,7 +267,9 @@ export interface Report {
   extractedData?: ExtractedReportData
 }
 
-export type AnomalyType = 'new_service' | 'statistical_anomaly' | 'spike'
+export type AnomalyType = 'new_service' | 'statistical_anomaly' | 'spike' | 'commitment_risk'
+export type ChargePattern = 'one_time' | 'recurring' | 'credit' | 'mixed'
+export type ClassifierColor = 'blue' | 'yellow' | 'orange' | 'red' | 'purple' | 'gray' | 'green'
 
 export interface SpendAnomaly {
   service: string
@@ -274,6 +278,10 @@ export interface SpendAnomaly {
   variance: number | null
   type: AnomalyType
   isProjected: boolean
+  flagType: string
+  color: ClassifierColor
+  pattern: ChargePattern
+  optimizationAction: string | null
   explanation: string
 }
 
@@ -301,7 +309,7 @@ export interface SpendCorrelation {
   status: CorrelationStatus
 }
 
-export type OpportunityPriority = 'High' | 'Medium' | 'Low'
+export type OpportunityPriority = 'Critical' | 'High' | 'Medium' | 'Low'
 
 export interface SpendOpportunity {
   category: string
@@ -312,6 +320,12 @@ export interface SpendOpportunity {
   action: string
 }
 
+export interface ExcludedService {
+  service: string
+  amount: number
+  reason: string
+}
+
 export interface SpendCommitmentUtilization {
   commitmentType: CommitmentType | null
   monthlyObligation: number
@@ -319,7 +333,13 @@ export interface SpendCommitmentUtilization {
   projectedSpend: number
   isPartial: boolean
   completionRatio: number
+  recurringSpend: number
+  oneTimeCharges: number
+  credits: number
+  netBilled: number
+  excludedServices: ExcludedService[]
   utilizationPct: number | null
+  onTrack: boolean
   overUnderAmount: number | null
   trailing3MoAvg: number | null
   underUtilizationRisk: boolean

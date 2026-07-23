@@ -7,7 +7,20 @@ function storageKey(month: string) {
   return `partialMonthBannerDismissed:${month}`
 }
 
-export default function PartialMonthBanner({ month, completionRatio }: { month: string; completionRatio: number }) {
+function fmtMoneyShort(n: number) {
+  const abs = Math.abs(n)
+  if (abs >= 1_000_000) return `$${(abs / 1_000_000).toFixed(2)}M`
+  if (abs >= 1_000) return `$${(abs / 1_000).toFixed(0)}K`
+  return `$${abs.toFixed(0)}`
+}
+
+interface Props {
+  month: string
+  completionRatio: number
+  oneTimeCharges?: { service: string; amount: number }[]
+}
+
+export default function PartialMonthBanner({ month, completionRatio, oneTimeCharges }: Props) {
   const [dismissed, setDismissed] = useState(true)
 
   useEffect(() => {
@@ -27,6 +40,10 @@ export default function PartialMonthBanner({ month, completionRatio }: { month: 
     setDismissed(true)
   }
 
+  const oneTimeText = oneTimeCharges && oneTimeCharges.length > 0
+    ? ` One-time charges (${oneTimeCharges.slice(0, 3).map(o => `${o.service}: ${fmtMoneyShort(o.amount)}`).join(', ')}) are shown as actual — not extrapolated.`
+    : ''
+
   return (
     <div style={{
       display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12,
@@ -35,7 +52,7 @@ export default function PartialMonthBanner({ month, completionRatio }: { month: 
     }}>
       <span>
         <strong>{monthName}</strong> data is {pct}% complete ({daysElapsed} of {daysInMonth} days).{' '}
-        MoM comparisons use projected full-month figures.
+        Recurring charges are projected to full month.{oneTimeText}
       </span>
       <button onClick={dismiss} className="btn btn-ghost" style={{ padding: '2px 10px', fontSize: 12, flexShrink: 0 }}>
         Dismiss

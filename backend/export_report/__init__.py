@@ -315,44 +315,67 @@ def _build_docx(
         if anomalies:
             tbl_anom = doc.add_table(rows=1, cols=4)
             tbl_anom.style = 'Table Grid'
-            _tbl_header(tbl_anom, ['Service', 'Current Amount', 'Type', 'Explanation'])
+            _tbl_header(tbl_anom, ['Service', 'Current Amount', 'Flag Type', 'Explanation'])
             for a in anomalies[:10]:
-                _tbl_row(tbl_anom, [
-                    a['service'], _fmt(a['currentAmount']), a['type'].replace('_', ' ').title(), a['explanation'],
-                ])
+                flag = a.get('flagType') or a['type'].replace('_', ' ').title()
+                _tbl_row(tbl_anom, [a['service'], _fmt(a['currentAmount']), flag, a['explanation']])
         else:
             _para(doc, 'No statistically significant anomalies detected this period.')
         _para(doc)
 
         cov_sp = spend_insights.get('coverageAnalysis') or {}
         commitment_util = spend_insights.get('commitmentUtilization') or {}
+
+        # Notable one-time charges, separate from recurring/anomaly analysis — sourced
+        # from the commitment breakdown when available, else from one-time-pattern anomalies.
+        _h2(doc, '4.2 Notable One-Time Charges')
+        one_time_rows = commitment_util.get('excludedServices') or [
+            {'service': a['service'], 'amount': a['currentAmount'], 'reason': a.get('flagType', 'One-Time')}
+            for a in anomalies if a.get('pattern') == 'one_time'
+        ]
+        if one_time_rows:
+            tbl_ot = doc.add_table(rows=1, cols=3)
+            tbl_ot.style = 'Table Grid'
+            _tbl_header(tbl_ot, ['Service', 'Amount', 'Reason'])
+            for r in one_time_rows[:10]:
+                _tbl_row(tbl_ot, [r['service'], _fmt(r['amount']), r['reason']])
+            _para(doc, 'Excluded from EDP/commitment utilization and not extrapolated for projection.',
+                  size=9, color=_GREY)
+        else:
+            _para(doc, 'No notable one-time charges this period.')
+        _para(doc)
+
         if commitment_util:
-            _h2(doc, '4.2 Commitment Utilization')
+            _h2(doc, '4.3 Commitment (EDP) Utilization')
             tbl_cu = doc.add_table(rows=1, cols=2)
             tbl_cu.style = 'Table Grid'
             _tbl_header(tbl_cu, ['Metric', 'Value'])
             _tbl_row(tbl_cu, ['Commitment Type', commitment_util.get('commitmentType') or '—'])
             _tbl_row(tbl_cu, ['Monthly Obligation', _fmt(commitment_util.get('monthlyObligation', 0))])
-            _tbl_row(tbl_cu, ['Actual Spend This Month', _fmt(commitment_util.get('actualSpend', 0))])
+            _tbl_row(tbl_cu, ['Recurring Spend (vs. obligation)', _fmt(commitment_util.get('recurringSpend', 0))])
             _tbl_row(tbl_cu, ['Utilization %', f"{commitment_util.get('utilizationPct', 0)}%"])
+            _tbl_row(tbl_cu, ['One-Time Charges (excluded)', _fmt(commitment_util.get('oneTimeCharges', 0))])
+            _tbl_row(tbl_cu, ['Credits Applied', f"-{_fmt(commitment_util.get('credits', 0))}"])
+            _tbl_row(tbl_cu, ['Net Billed', _fmt(commitment_util.get('netBilled', 0))])
+            _tbl_row(tbl_cu, ['Status', 'On Track' if commitment_util.get('onTrack') else 'Off Track'])
             over_under = commitment_util.get('overUnderAmount', 0)
             _tbl_row(tbl_cu, [
-                'Over / Under Obligation',
+                'Recurring Over / Under Obligation',
                 (('+' if over_under >= 0 else '') + _fmt(over_under)),
             ])
-            _tbl_row(tbl_cu, ['Trailing 3-Month Average', _fmt(commitment_util.get('trailing3MoAvg', 0))])
+            _tbl_row(tbl_cu, ['Trailing 3-Month Recurring Average', _fmt(commitment_util.get('trailing3MoAvg', 0))])
             months_remaining = commitment_util.get('monthsRemaining')
             if months_remaining is not None:
                 _tbl_row(tbl_cu, ['Months Remaining on Commitment', str(months_remaining)])
             _para(doc)
             if commitment_util.get('underUtilizationRisk'):
-                _para(doc, 'Risk: trailing 3-month average spend is below the monthly obligation — '
-                           'this commitment is at risk of under-utilization.')
+                _para(doc, 'Risk: trailing 3-month recurring average is below 85% of the monthly '
+                           'obligation — this commitment is at risk of under-utilization.')
             if commitment_util.get('expiryWarning'):
                 _para(doc, 'Renewal decision needed — commitment expires within 6 months; '
                            'a current pricing vs. market rate analysis is recommended.')
         else:
-            _h2(doc, '4.2 Savings Plan Coverage Recommendation')
+            _h2(doc, '4.3 Savings Plan Coverage Recommendation')
             if cov_sp:
                 tbl_sp = doc.add_table(rows=1, cols=2)
                 tbl_sp.style = 'Table Grid'
@@ -369,16 +392,15 @@ def _build_docx(
                     _para(doc, rec['rationale'])
         _para(doc)
 
-        _h2(doc, '4.3 Top Additional Opportunities')
+        _h2(doc, '4.4 Optimization Opportunities')
         opportunities = spend_insights.get('opportunities') or []
         if opportunities:
             tbl_opp = doc.add_table(rows=1, cols=5)
             tbl_opp.style = 'Table Grid'
             _tbl_header(tbl_opp, ['Priority', 'Service', 'Category', 'Est. Savings/mo', 'Recommended Action'])
-            for o in opportunities[:5]:
-                _tbl_row(tbl_opp, [
-                    o['priority'], o['service'], o['category'], _fmt(o['estimatedSavings']), o['action'],
-                ])
+            for o in opportunities[:10]:
+                savings = _fmt(o['estimatedSavings']) if o['estimatedSavings'] > 0 else 'N/A — risk mitigation'
+                _tbl_row(tbl_opp, [o['priority'], o['service'], o['category'], savings, o['action']])
         else:
             _para(doc, 'No additional optimization opportunities identified beyond CloudHealth signal.')
     else:
@@ -734,7 +756,7 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
                 si_commitment_utilization = None
                 if si_has_commitment:
                     si_commitment_utilization = compute_commitment_utilization(
-                        si_commitment, window_summary['monthlyTotals'], months_in_window,
+                        si_commitment, window_summary['monthlyTotals'], months_in_window, si_by_service,
                         si_is_partial, si_completion_ratio,
                     )
                 else:
@@ -743,8 +765,13 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
                         si_is_partial, si_completion_ratio,
                     )
 
+                si_monthly_obligation = (
+                    si_commitment_utilization['monthlyObligation'] if si_commitment_utilization else None
+                )
                 si_opportunities = compute_opportunities(
                     si_by_service, si_coverage, months_in_window[-1],
+                    months_in_window=months_in_window,
+                    monthly_obligation=si_monthly_obligation,
                     skip_savings_plan_opportunity=si_has_commitment,
                     is_partial=si_is_partial, completion_ratio=si_completion_ratio,
                 )

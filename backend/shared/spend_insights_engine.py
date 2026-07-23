@@ -9,6 +9,10 @@ import statistics
 from datetime import date
 from typing import Optional
 
+from .cost_classifier import classify_service, compute_edp_utilization
+from .cost_classifier import priority_rank as classifier_priority_rank
+from .cost_classifier import project_amount as classify_project_amount
+
 # CloudHealth tracks signal at this coarse a granularity (see trend_engine._SERVICE_MAP).
 # cost_history service names are far more granular ("EC2 - Compute", "EC2 - Transfer", …);
 # the prefix before " - " maps back up to one of these when correlating spend to signal.
@@ -82,19 +86,40 @@ def priority_for(estimated_savings: float) -> str:
 
 # ── anomaly detection ──────────────────────────────────────────────────────────
 
+def _build_anomaly(
+    service: str, current: float, rolling_avg: Optional[float], variance: Optional[float],
+    anomaly_type: str, classification: dict, is_projected: bool, explanation: str,
+) -> dict:
+    return {
+        'service': service,
+        'currentAmount': round(current, 2),
+        'rollingAvg': round(rolling_avg, 2) if rolling_avg is not None else 0.0,
+        'variance': round(variance, 2) if variance is not None else None,
+        'type': anomaly_type,
+        'isProjected': is_projected,
+        'flagType': classification.get('flag_type', ''),
+        'color': classification.get('color', 'gray'),
+        'pattern': classification.get('pattern', 'recurring'),
+        'optimizationAction': classification.get('optimization_action'),
+        'explanation': explanation,
+    }
+
+
 def compute_anomalies(
     by_service: list,
     months_in_window: list,
     is_partial: bool = False,
     completion_ratio: float = 1.0,
 ) -> list:
-    """One entry per flagged service: new_service > statistical_anomaly > spike.
+    """One entry per flagged service: commitment_risk > new_service > statistical_anomaly > spike.
 
-    When the current month is still in progress, its raw to-date amount is
-    projected to a full-month run rate before any comparison — otherwise a
-    perfectly normal mid-month total reads as a huge anomaly against full prior
-    months. The rolling average itself is built only from prior (always-closed)
-    months, so it never needs projecting.
+    Every service is classified first (shared.cost_classifier): a one-time/excluded
+    charge (Amazon Marketplace, Enterprise Support, …) is never projected — a one-time
+    $1.2M software purchase doesn't become $1.6M just because 74% of the month has
+    elapsed — while a recurring charge is projected before comparison, same as before.
+    "alert_if_growing" services (unused Savings Plan capacity) are flagged the instant
+    they're non-zero, bypassing the statistical checks entirely — any unused committed
+    capacity is worth surfacing immediately, not just when it's statistically unusual.
     """
     if len(months_in_window) < 2:
         return []
@@ -102,31 +127,38 @@ def compute_anomalies(
     current_month = months_in_window[-1]
     prior_months = months_in_window[:-1]
     anomalies = []
-    tag = ' (projected)' if is_partial else ''
 
     for svc in by_service:
         service = svc['service']
+        classification = classify_service(service)
         month_vals = svc.get('months', {})
         current_raw = month_vals.get(current_month, 0.0)
-        current = project_amount(current_raw, completion_ratio) if is_partial else current_raw
         prior_vals = [month_vals.get(m, 0.0) for m in prior_months]
+
+        if classification.get('alert_if_growing') and current_raw > 0:
+            anomalies.append(_build_anomaly(
+                service, current_raw, 0.0, None, 'commitment_risk', classification, False,
+                explanation=f'{service} shows {_fmt(current_raw)} this month — {classification["description"]}',
+            ))
+            continue
+
+        current, was_projected = (
+            classify_project_amount(current_raw, service, completion_ratio) if is_partial
+            else (current_raw, False)
+        )
+        tag = ' (projected)' if was_projected else ''
 
         if current <= 0:
             continue
 
         if prior_vals and all(v == 0 for v in prior_vals):
-            anomalies.append({
-                'service': service,
-                'currentAmount': round(current, 2),
-                'rollingAvg': 0.0,
-                'variance': None,
-                'type': 'new_service',
-                'isProjected': is_partial,
-                'explanation': (
+            anomalies.append(_build_anomaly(
+                service, current, 0.0, None, 'new_service', classification, was_projected,
+                explanation=(
                     f'{service} had no recorded spend in the prior {len(prior_vals)} '
                     f'month(s) but shows {_fmt(current)}{tag} this month.'
                 ),
-            })
+            ))
             continue
 
         rolling_window = prior_vals[-3:] if len(prior_vals) >= 3 else prior_vals
@@ -135,36 +167,26 @@ def compute_anomalies(
             stdev = statistics.stdev(rolling_window)
             threshold = avg + 2 * stdev
             if stdev > 0 and current > threshold:
-                anomalies.append({
-                    'service': service,
-                    'currentAmount': round(current, 2),
-                    'rollingAvg': round(avg, 2),
-                    'variance': round(stdev, 2),
-                    'type': 'statistical_anomaly',
-                    'isProjected': is_partial,
-                    'explanation': (
+                anomalies.append(_build_anomaly(
+                    service, current, avg, stdev, 'statistical_anomaly', classification, was_projected,
+                    explanation=(
                         f'{service} is {_fmt(current)}{tag} this month, above its rolling average of '
                         f'{_fmt(avg)} plus two standard deviations ({_fmt(threshold)}).'
                     ),
-                })
+                ))
                 continue
 
         prev = prior_vals[-1] if prior_vals else 0.0
         if prev > 0:
             mom_pct = (current - prev) / prev * 100
             if mom_pct > 50:
-                anomalies.append({
-                    'service': service,
-                    'currentAmount': round(current, 2),
-                    'rollingAvg': round(prev, 2),
-                    'variance': round(mom_pct, 1),
-                    'type': 'spike',
-                    'isProjected': is_partial,
-                    'explanation': (
+                anomalies.append(_build_anomaly(
+                    service, current, prev, mom_pct, 'spike', classification, was_projected,
+                    explanation=(
                         f'{service} rose {mom_pct:.0f}% month-over-month, '
                         f'from {_fmt(prev)} to {_fmt(current)}{tag}.'
                     ),
-                })
+                ))
 
     anomalies.sort(key=lambda a: -a['currentAmount'])
     return anomalies
@@ -324,26 +346,37 @@ def _svc_val(by_service: list, name: str, month: str) -> float:
     return svc['months'].get(month, 0.0) if svc else 0.0
 
 
+_EDP_RISK_RATIO = 0.85  # trailing 3-mo recurring avg below this fraction of obligation -> risk flag
+
+
 def compute_opportunities(
     by_service: list,
     coverage_analysis: Optional[dict],
     current_month: str,
+    months_in_window: Optional[list] = None,
+    monthly_obligation: Optional[float] = None,
     skip_savings_plan_opportunity: bool = False,
     is_partial: bool = False,
     completion_ratio: float = 1.0,
 ) -> list:
-    """coverage_analysis may be None when the customer has a commitment context instead —
-    the Savings Plan gap opportunity doesn't apply there and is skipped either way.
+    """Threshold-based optimization opportunities, sorted Critical > High > Medium > Low,
+    then by estimated savings within each priority tier.
 
-    Every dollar figure here is a projected full-month run-rate estimate when the
-    current month is partial: the ratio-based checks (e.g. snapshot % of storage)
-    would hold either way since both sides scale together, but the absolute-dollar
-    check (WorkSpaces > $5K/mo) and the reported currentCost/estimatedSavings figures
-    need the projection to not understate a real opportunity mid-month.
+    coverage_analysis may be None when the customer has a commitment context instead —
+    the generic Savings Plan gap opportunity doesn't apply there (skip_savings_plan_opportunity
+    should be True); monthly_obligation + months_in_window drive the EDP-specific checks
+    (unused SP capacity, burn-rate risk) instead.
+
+    Dollar figures are classification-aware projections when the current month is
+    partial — a one-time charge (e.g. Rekognition trial) is never scaled up, a
+    recurring one (EC2 Transfer, EBS Snapshot, …) is, same rule as anomaly detection.
     """
     def val(name: str) -> float:
         raw = _svc_val(by_service, name, current_month)
-        return project_amount(raw, completion_ratio) if is_partial else raw
+        if is_partial:
+            projected, _ = classify_project_amount(raw, name, completion_ratio)
+            return projected
+        return raw
 
     opportunities = []
 
@@ -361,70 +394,109 @@ def compute_opportunities(
             ),
         })
 
-    ebs_snapshot = val('EC2 - EBS Snapshot')
-    ebs_storage = val('EBS - Storage')
-    if ebs_storage > 0 and ebs_snapshot / ebs_storage > 0.15:
-        est = round(ebs_snapshot * 0.30, 2)
-        opportunities.append({
-            'category': 'Storage',
-            'service': 'EC2 - EBS Snapshot',
-            'currentCost': round(ebs_snapshot, 2),
-            'estimatedSavings': est,
-            'priority': priority_for(est),
-            'action': (
-                'EBS snapshot cost is a high share of EBS storage spend — '
-                'review snapshot lifecycle/retention policy for cleanup.'
-            ),
-        })
-
-    ec2_transfer = val('EC2 - Transfer')
+    # a. EC2 data transfer (incl. NAT Gateway) vs. EC2 Compute
     ec2_compute = val('EC2 - Compute')
-    if ec2_compute > 0 and ec2_transfer / ec2_compute > 0.05:
-        est = round(ec2_transfer * 0.20, 2)
+    ec2_transfer = val('EC2 - Transfer') + val('EC2 - NAT Gateway Transfer')
+    if ec2_compute > 0 and ec2_transfer > ec2_compute * 0.03:
+        est = round(ec2_transfer * 0.60, 2)
         opportunities.append({
-            'category': 'Networking',
-            'service': 'EC2 - Transfer',
-            'currentCost': round(ec2_transfer, 2),
-            'estimatedSavings': est,
-            'priority': priority_for(est),
-            'action': (
-                'Data transfer cost is elevated relative to compute spend — '
-                'review VPC endpoint usage to reduce cross-AZ/internet transfer.'
-            ),
+            'category': 'Networking', 'service': 'EC2 - Transfer',
+            'currentCost': round(ec2_transfer, 2), 'estimatedSavings': est, 'priority': priority_for(est),
+            'action': 'VPC Endpoint review — eliminates NAT Gateway data transfer charges',
         })
 
-    rds_backup = val('RDS - Charged Backup Usage')
+    # b. EBS snapshot vs. EBS storage
+    ebs_storage = val('EBS - Storage')
+    ebs_snapshot = val('EC2 - EBS Snapshot')
+    if ebs_storage > 0 and ebs_snapshot > ebs_storage * 0.15:
+        est = round(ebs_snapshot * 0.50, 2)
+        opportunities.append({
+            'category': 'Storage', 'service': 'EC2 - EBS Snapshot',
+            'currentCost': round(ebs_snapshot, 2), 'estimatedSavings': est, 'priority': priority_for(est),
+            'action': 'EBS snapshot lifecycle policy review — delete snapshots older than retention policy',
+        })
+
+    # c. RDS backup vs. RDS compute
     rds_compute = val('RDS - Compute')
-    if rds_compute > 0 and rds_backup / rds_compute > 0.20:
-        est = round(rds_backup * 0.25, 2)
+    rds_backup = val('RDS - Charged Backup Usage')
+    if rds_compute > 0 and rds_backup > rds_compute * 0.20:
+        est = round(rds_backup * 0.40, 2)
         opportunities.append({
-            'category': 'Database',
-            'service': 'RDS - Charged Backup Usage',
-            'currentCost': round(rds_backup, 2),
-            'estimatedSavings': est,
-            'priority': priority_for(est),
-            'action': 'RDS backup cost is high relative to compute spend — review backup retention window.',
+            'category': 'Database', 'service': 'RDS - Charged Backup Usage',
+            'currentCost': round(rds_backup, 2), 'estimatedSavings': est, 'priority': priority_for(est),
+            'action': 'Review RDS backup retention periods — reduce non-production to 7 days',
         })
 
-    workspaces_total_raw = sum(
-        s.get('months', {}).get(current_month, 0.0) for s in by_service if 'workspaces' in s['service'].lower()
-    )
-    workspaces_total = project_amount(workspaces_total_raw, completion_ratio) if is_partial else workspaces_total_raw
-    if workspaces_total > 5000:
-        est = round(workspaces_total * 0.15, 2)
+    # d. WorkSpaces absolute threshold
+    workspaces = val('Amazon WorkSpaces')
+    if workspaces > 5000:
+        est = round(workspaces * 0.25, 2)
         opportunities.append({
-            'category': 'Compute',
-            'service': 'WorkSpaces',
-            'currentCost': round(workspaces_total, 2),
-            'estimatedSavings': est,
-            'priority': priority_for(est),
+            'category': 'Compute', 'service': 'WorkSpaces',
+            'currentCost': round(workspaces, 2), 'estimatedSavings': est, 'priority': priority_for(est),
+            'action': 'WorkSpaces right-sizing — match bundle size to actual usage patterns',
+        })
+
+    # e. Unknown-workload service — always flag if present, regardless of amount
+    rekognition = val('Amazon Rekognition')
+    if rekognition > 0:
+        opportunities.append({
+            'category': 'Unknown Workload', 'service': 'Amazon Rekognition',
+            'currentCost': round(rekognition, 2), 'estimatedSavings': 0.0, 'priority': 'Low',
+            'action': 'Identify Rekognition use case owner — confirm intentional usage',
+        })
+
+    # f. Multi-AZ architecture review — always flag if present
+    multi_az = val('RDS - Multi-AZ GP3 Storage')
+    if multi_az > 0:
+        est = round(multi_az * 0.30, 2)
+        opportunities.append({
+            'category': 'Architecture', 'service': 'RDS - Multi-AZ GP3 Storage',
+            'currentCost': round(multi_az, 2), 'estimatedSavings': est, 'priority': priority_for(est),
+            'action': 'Audit Multi-AZ RDS instances — disable for dev/test environments',
+        })
+
+    # g. Unused Savings Plan capacity — double-waste risk on top of a commitment
+    sp_unused = val('Savings Plan - Unused') + val('Database Savings Plan - Unused')
+    if sp_unused > 0:
+        opportunities.append({
+            'category': 'Savings Plan', 'service': 'Unused Savings Plan Capacity',
+            'currentCost': round(sp_unused, 2), 'estimatedSavings': 0.0, 'priority': 'High',
             'action': (
-                'WorkSpaces spend exceeds $5K/month — '
-                'recommend a right-sizing assessment of bundle types and utilization.'
+                'Migrate workloads to consume committed SP capacity — '
+                'unused SP on top of EDP is double-waste'
             ),
         })
 
-    opportunities.sort(key=lambda o: -o['estimatedSavings'])
+    # EDP burn-rate risk — trailing 3-month RECURRING average vs. 85% of obligation.
+    # Only recurring-classified services enter the average, so a month dominated by a
+    # one-time charge (or lacking one) doesn't distort whether the commitment itself
+    # is being consumed.
+    if monthly_obligation and months_in_window:
+        trailing_months = months_in_window[-3:]
+        trailing_vals = []
+        for m in trailing_months:
+            month_recurring = sum(
+                s['months'].get(m, 0.0) for s in by_service
+                if classify_service(s['service'])['pattern'] == 'recurring'
+            )
+            if is_partial and m == current_month:
+                month_recurring = project_amount(month_recurring, completion_ratio)
+            trailing_vals.append(month_recurring)
+        trailing_avg = statistics.mean(trailing_vals) if trailing_vals else 0.0
+        threshold_85 = monthly_obligation * _EDP_RISK_RATIO
+        if trailing_avg < threshold_85:
+            opportunities.append({
+                'category': 'EDP Risk', 'service': 'EDP Under-Utilization Risk',
+                'currentCost': round(trailing_avg, 2), 'estimatedSavings': 0.0, 'priority': 'Critical',
+                'action': (
+                    f'Trailing 3-month recurring spend ({_fmt(trailing_avg)}) is below 85% of EDP obligation '
+                    f'({_fmt(threshold_85)}). Risk of unfavorable renewal terms. Identify workloads to migrate '
+                    f'to AWS to consume committed capacity.'
+                ),
+            })
+
+    opportunities.sort(key=lambda o: (classifier_priority_rank(o['priority']), -o['estimatedSavings']))
     return opportunities
 
 
@@ -446,40 +518,57 @@ def compute_commitment_utilization(
     commitment: dict,
     monthly_totals: list,
     months_in_window: list,
+    by_service: list,
     is_partial: bool = False,
     completion_ratio: float = 1.0,
 ) -> dict:
     """monthly_totals: cost_summary['monthlyTotals'] shape — [{month, netCost, ...}, ...].
+    by_service: cost_summary['byService'] shape — [{service, months: {month: amount}}, ...].
 
-    utilizationPct/overUnderAmount compare the monthly obligation — a flat, full-month
-    figure — against projected spend, not raw to-date spend, or a partial current
-    month always reads as under-utilized regardless of actual run rate. actualSpend
-    is kept alongside projectedSpend so the caller can still show "what's billed so
-    far" without it driving the utilization math.
+    Utilization compares the obligation against RECURRING spend only (shared.cost_classifier)
+    — a one-time software purchase (Amazon Marketplace) or a flat fee (Enterprise Support)
+    doesn't represent capacity consumed against the commitment, and including it made a
+    normal month look wildly over-utilized. actualSpend (all patterns, to-date) is kept
+    alongside for "what's billed so far" display; it never drives the utilization math.
     """
     monthly_obligation = commitment.get('commitmentMonthlyObligation')
     if not monthly_obligation:
         annual = commitment.get('commitmentAnnualValue') or 0.0
         monthly_obligation = annual / 12 if annual else 0.0
 
-    totals_by_month = {m['month']: m for m in monthly_totals}
     current_month = months_in_window[-1]
-    actual_spend = totals_by_month.get(current_month, {}).get('netCost', 0.0)
-    projected_spend = project_amount(actual_spend, completion_ratio) if is_partial else actual_spend
 
-    utilization_pct = round(projected_spend / monthly_obligation * 100, 1) if monthly_obligation else None
-    over_under_amount = round(projected_spend - monthly_obligation, 2) if monthly_obligation else None
+    services_data = []
+    for svc in by_service:
+        if current_month not in svc.get('months', {}):
+            continue
+        raw = svc['months'][current_month]
+        if is_partial:
+            projected, _ = classify_project_amount(raw, svc['service'], completion_ratio)
+        else:
+            projected = raw
+        services_data.append({'service': svc['service'], 'amount': raw, 'projected_amount': projected})
 
+    edp = compute_edp_utilization(services_data, monthly_obligation)
+    actual_spend_to_date = sum(s['amount'] for s in services_data)
+    net_billed = edp['recurring_spend'] + edp['one_time_charges'] - edp['credits']
+
+    # Trailing 3-month RECURRING average (not raw netCost) drives the burn-rate risk
+    # flag, matching the EDP Under-Utilization Risk opportunity's own threshold.
     trailing_months = months_in_window[-3:]
     trailing_vals = []
     for m in trailing_months:
-        v = totals_by_month.get(m, {}).get('netCost', 0.0)
+        month_recurring = sum(
+            s['months'].get(m, 0.0) for s in by_service
+            if classify_service(s['service'])['pattern'] == 'recurring'
+        )
         if is_partial and m == current_month:
-            v = project_amount(v, completion_ratio)
-        trailing_vals.append(v)
+            month_recurring = project_amount(month_recurring, completion_ratio)
+        trailing_vals.append(month_recurring)
     trailing_3mo_avg = round(statistics.mean(trailing_vals), 2) if trailing_vals else None
     under_utilization_risk = bool(
-        trailing_3mo_avg is not None and monthly_obligation and trailing_3mo_avg < monthly_obligation
+        trailing_3mo_avg is not None and monthly_obligation
+        and trailing_3mo_avg < monthly_obligation * _EDP_RISK_RATIO
     )
 
     end_date = commitment.get('commitmentEndDate')
@@ -489,12 +578,18 @@ def compute_commitment_utilization(
     return {
         'commitmentType': commitment.get('commitmentType'),
         'monthlyObligation': round(monthly_obligation, 2),
-        'actualSpend': round(actual_spend, 2),
-        'projectedSpend': round(projected_spend, 2),
+        'actualSpend': round(actual_spend_to_date, 2),
+        'projectedSpend': round(net_billed, 2),
         'isPartial': is_partial,
         'completionRatio': round(completion_ratio, 4),
-        'utilizationPct': utilization_pct,
-        'overUnderAmount': over_under_amount,
+        'recurringSpend': round(edp['recurring_spend'], 2),
+        'oneTimeCharges': round(edp['one_time_charges'], 2),
+        'credits': round(edp['credits'], 2),
+        'netBilled': round(net_billed, 2),
+        'excludedServices': edp['excluded_services'],
+        'utilizationPct': round(edp['utilization_pct'], 1),
+        'onTrack': edp['on_track'],
+        'overUnderAmount': round(edp['recurring_spend'] - monthly_obligation, 2) if monthly_obligation else None,
         'trailing3MoAvg': trailing_3mo_avg,
         'underUtilizationRisk': under_utilization_risk,
         'monthsRemaining': months_remaining,

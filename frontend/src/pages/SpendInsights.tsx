@@ -4,7 +4,7 @@ import { Cell, Pie, PieChart, ResponsiveContainer } from 'recharts'
 import { fetchSpendInsights, saveSpendInsightsToReport } from '../api'
 import PartialMonthBanner from '../components/PartialMonthBanner'
 import { useCustomer } from '../context/CustomerContext'
-import type { AnomalyType, CorrelationStatus, OpportunityPriority, SpendInsightsResponse } from '../types'
+import type { ClassifierColor, CorrelationStatus, OpportunityPriority, SpendAnomaly, SpendInsightsResponse } from '../types'
 
 // Validated categorical palette (dataviz skill), consistent with Dashboard's cost widgets.
 const COVERED_COLOR = '#2a78d6'
@@ -26,20 +26,25 @@ function timeAgo(isoStr: string): string {
 }
 function now() { const d = new Date(); return { month: d.getMonth() + 1, year: d.getFullYear() } }
 
-const ANOMALY_SEVERITY: Record<AnomalyType, 'red' | 'yellow'> = {
-  new_service: 'red',
-  statistical_anomaly: 'yellow',
-  spike: 'yellow',
+// Color -> { card background/border, badge background/text } — badge-orange/purple don't
+// exist in index.css, so those two are styled inline; the rest reuse the shared badge-* classes.
+const COLOR_STYLES: Record<ClassifierColor, { bg: string; border: string; badgeBg: string; badgeText: string; badgeCls?: string }> = {
+  blue:   { bg: '#EBF3FB', border: '#BEE0F7', badgeBg: '#EBF3FB', badgeText: '#0078D4', badgeCls: 'badge-blue' },
+  yellow: { bg: '#FFF4CE', border: '#F5DFA0', badgeBg: '#FFF4CE', badgeText: '#9D5D00', badgeCls: 'badge-yellow' },
+  orange: { bg: '#FDEEE1', border: '#F0B27A', badgeBg: '#FDEEE1', badgeText: '#B85C00' },
+  red:    { bg: '#FDE7E9', border: '#F4B8BD', badgeBg: '#FDE7E9', badgeText: '#C50F1F', badgeCls: 'badge-red' },
+  purple: { bg: '#F2EEFB', border: '#C9B8ED', badgeBg: '#F2EEFB', badgeText: '#5B3FA6' },
+  gray:   { bg: '#F3F2F1', border: '#E1DFDD', badgeBg: '#F3F2F1', badgeText: '#616161', badgeCls: 'badge-gray' },
+  green:  { bg: '#DFF6DD', border: '#B7E5B0', badgeBg: '#DFF6DD', badgeText: '#107C10', badgeCls: 'badge-green' },
 }
-function anomalySeverity(type: AnomalyType, variance: number | null): 'red' | 'yellow' {
-  if (type === 'new_service') return 'red'
-  if (type === 'spike' && variance !== null && variance > 100) return 'red'
-  return ANOMALY_SEVERITY[type]
-}
-const ANOMALY_TYPE_LABEL: Record<AnomalyType, string> = {
-  new_service: 'New Service',
-  statistical_anomaly: 'Statistical Anomaly',
-  spike: 'Spike',
+
+function anomalyPresentation(a: SpendAnomaly): { color: ClassifierColor; badgeLabel: string } {
+  if (a.flagType === 'Unused Commitment') return { color: 'red', badgeLabel: 'COMMITMENT RISK' }
+  if (a.flagType === 'Unknown Workload') return { color: 'yellow', badgeLabel: 'VERIFY USE CASE' }
+  if (a.flagType === 'Architecture Review') return { color: 'purple', badgeLabel: 'REVIEW RECOMMENDED' }
+  if (a.pattern === 'one_time') return { color: 'blue', badgeLabel: 'ONE-TIME' }
+  if (a.type === 'statistical_anomaly' && a.pattern === 'recurring') return { color: 'orange', badgeLabel: 'STATISTICAL ANOMALY' }
+  return { color: a.color, badgeLabel: (a.flagType || a.type.replace('_', ' ')).toUpperCase() }
 }
 
 const STATUS_BADGE: Record<CorrelationStatus, { label: string; cls: string }> = {
@@ -50,9 +55,11 @@ const STATUS_BADGE: Record<CorrelationStatus, { label: string; cls: string }> = 
   monitor: { label: 'Monitor', cls: 'badge-gray' },
 }
 
+// Critical/High read as urgent (red/yellow); Medium/Low recede to gray.
 const PRIORITY_BADGE: Record<OpportunityPriority, string> = {
-  High: 'badge-red',
-  Medium: 'badge-yellow',
+  Critical: 'badge-red',
+  High: 'badge-yellow',
+  Medium: 'badge-gray',
   Low: 'badge-gray',
 }
 
@@ -129,30 +136,26 @@ function CommitmentGauge({ utilizationPct }: { utilizationPct: number }) {
         alignItems: 'center', justifyContent: 'center', pointerEvents: 'none',
       }}>
         <div style={{ fontSize: 30, fontWeight: 700, color }}>{utilizationPct.toFixed(1)}%</div>
-        <div style={{ fontSize: 11, color: 'var(--muted)' }}>of monthly obligation</div>
+        <div style={{ fontSize: 11, color: 'var(--muted)' }}>recurring spend vs. obligation</div>
       </div>
     </div>
   )
 }
 
-function AnomalyCard({
-  service, currentAmount, type, explanation, variance, isProjected,
-}: {
-  service: string; currentAmount: number; type: AnomalyType; explanation: string
-  variance: number | null; isProjected: boolean
-}) {
-  const severity = anomalySeverity(type, variance)
-  const bg = severity === 'red' ? '#FDE7E9' : '#FFF4CE'
-  const border = severity === 'red' ? '#F4B8BD' : '#F5DFA0'
-  const badgeCls = severity === 'red' ? 'badge-red' : 'badge-yellow'
+function AnomalyCard(a: SpendAnomaly) {
+  const { service, currentAmount, explanation, isProjected } = a
+  const { color, badgeLabel } = anomalyPresentation(a)
+  const style = COLOR_STYLES[color]
   return (
     <div style={{
-      padding: '14px 16px', background: bg, border: `1px solid ${border}`, borderRadius: 8,
+      padding: '14px 16px', background: style.bg, border: `1px solid ${style.border}`, borderRadius: 8,
       display: 'flex', flexDirection: 'column', gap: 6, minWidth: 260, flex: '1 1 300px',
     }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8 }}>
         <div style={{ fontWeight: 700, fontSize: 14 }}>{service}</div>
-        <span className={`badge ${badgeCls}`}>{ANOMALY_TYPE_LABEL[type]}</span>
+        {style.badgeCls
+          ? <span className={`badge ${style.badgeCls}`}>{badgeLabel}</span>
+          : <span className="badge" style={{ background: style.badgeBg, color: style.badgeText }}>{badgeLabel}</span>}
       </div>
       <div style={{ fontSize: 18, fontWeight: 700 }}>
         {fmtMoney(currentAmount)}
@@ -183,13 +186,67 @@ function OpportunityCard({
         </div>
         <div>
           <div style={{ fontSize: 10, color: 'var(--muted)' }}>Est. Savings/mo</div>
-          <div style={{ fontSize: 15, fontWeight: 600, color: 'var(--green)' }}>{fmtMoney(estimatedSavings)}</div>
+          <div style={{ fontSize: 15, fontWeight: 600, color: estimatedSavings > 0 ? 'var(--green)' : 'var(--muted)' }}>
+            {estimatedSavings > 0 ? fmtMoney(estimatedSavings) : 'N/A — risk mitigation'}
+          </div>
         </div>
       </div>
       <div style={{ fontSize: 12, color: 'var(--text)', lineHeight: 1.5, marginBottom: 10 }}>{action}</div>
       <Link to="/upload" className="btn btn-ghost" style={{ fontSize: 12, padding: '4px 10px', display: 'inline-block' }}>
         Review in Cost History
       </Link>
+    </div>
+  )
+}
+
+function BurnSummaryCard({ insights }: { insights: SpendInsightsResponse }) {
+  const cu = insights.commitmentUtilization
+  if (!cu) return null
+  const statusOnTrack = cu.onTrack
+  return (
+    <div className="card">
+      <div className="card-title">Monthly Burn Summary</div>
+      <div className="table-wrap">
+        <table>
+          <tbody>
+            <tr>
+              <td style={{ fontWeight: 600 }}>EDP Monthly Obligation</td>
+              <td>{fmtMoney(cu.monthlyObligation)}</td>
+            </tr>
+            <tr>
+              <td style={{ fontWeight: 600 }}>Recurring Spend {cu.isPartial ? '(proj.)' : ''}</td>
+              <td>
+                {fmtMoney(cu.recurringSpend)}{' '}
+                {cu.utilizationPct !== null && (
+                  <span style={{ color: utilizationColor(cu.utilizationPct), fontWeight: 700 }}>
+                    {cu.utilizationPct.toFixed(1)}%
+                  </span>
+                )}
+              </td>
+            </tr>
+            <tr>
+              <td style={{ fontWeight: 600 }}>One-Time Charges</td>
+              <td>{fmtMoney(cu.oneTimeCharges)}</td>
+            </tr>
+            <tr>
+              <td style={{ fontWeight: 600 }}>Credits</td>
+              <td style={{ color: 'var(--green)' }}>−{fmtMoney(cu.credits)}</td>
+            </tr>
+            <tr>
+              <td style={{ fontWeight: 600 }}>Net Billed {cu.isPartial ? '(proj.)' : ''}</td>
+              <td style={{ fontWeight: 700 }}>{fmtMoney(cu.netBilled)}</td>
+            </tr>
+            <tr>
+              <td style={{ fontWeight: 600 }}>Status</td>
+              <td>
+                <span className={statusOnTrack ? 'badge badge-green' : 'badge badge-red'}>
+                  {statusOnTrack ? 'ON TRACK' : 'AT RISK'}
+                </span>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
     </div>
   )
 }
@@ -269,7 +326,14 @@ export default function SpendInsights() {
       </div>
 
       {insights?.isPartial && (
-        <PartialMonthBanner month={insights.month} completionRatio={insights.completionRatio} />
+        <PartialMonthBanner
+          month={insights.month}
+          completionRatio={insights.completionRatio}
+          oneTimeCharges={
+            insights.commitmentUtilization?.excludedServices.map(e => ({ service: e.service, amount: e.amount }))
+            ?? insights.anomalies.filter(a => a.pattern === 'one_time').map(a => ({ service: a.service, amount: a.currentAmount }))
+          }
+        />
       )}
 
       {!customerId && (
@@ -301,6 +365,9 @@ export default function SpendInsights() {
 
       {insights && (
         <>
+          {/* ── Monthly Burn Summary (committed customers only) ───────────── */}
+          <BurnSummaryCard insights={insights} />
+
           {/* ── SECTION 1: Anomalies Detected ─────────────────────────────── */}
           <div className="card">
             <div className="card-title">Anomalies Detected — {fmtMonthLabel(insights.month)}</div>
@@ -326,56 +393,65 @@ export default function SpendInsights() {
                 <div style={{ flex: '2 1 320px' }}>
                   <div style={{ display: 'flex', gap: 20, marginBottom: 12, flexWrap: 'wrap' }}>
                     <div>
-                      <div style={{ fontSize: 10, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '.5px' }}>Monthly Obligation</div>
-                      <div style={{ fontSize: 16, fontWeight: 700 }}>{fmtMoney(cu.monthlyObligation)}</div>
+                      <div style={{ fontSize: 10, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '.5px' }}>Recurring Spend</div>
+                      <div style={{ fontSize: 16, fontWeight: 700 }}>{fmtMoney(cu.recurringSpend)}</div>
+                      <div style={{ fontSize: 10, color: 'var(--muted)' }}>{cu.utilizationPct.toFixed(1)}% of obligation</div>
                     </div>
                     <div>
-                      <div style={{ fontSize: 10, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '.5px' }}>
-                        {cu.isPartial ? 'Actual Spend (to date)' : 'Actual Spend'}
-                      </div>
-                      <div style={{ fontSize: 16, fontWeight: 700 }}>{fmtMoney(cu.actualSpend)}</div>
+                      <div style={{ fontSize: 10, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '.5px' }}>One-Time Charges</div>
+                      <div style={{ fontSize: 16, fontWeight: 700 }}>{fmtMoney(cu.oneTimeCharges)}</div>
+                      <div style={{ fontSize: 10, color: 'var(--muted)' }}>excluded from utilization</div>
                     </div>
-                    {cu.isPartial && (
-                      <div>
-                        <div style={{ fontSize: 10, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '.5px' }}>Projected Full Month</div>
-                        <div style={{ fontSize: 16, fontWeight: 700, color: 'var(--blue)' }}>{fmtMoney(cu.projectedSpend)}</div>
-                      </div>
-                    )}
+                    <div>
+                      <div style={{ fontSize: 10, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '.5px' }}>Credits Applied</div>
+                      <div style={{ fontSize: 16, fontWeight: 700, color: 'var(--green)' }}>−{fmtMoney(cu.credits)}</div>
+                    </div>
+                    <div>
+                      <div style={{ fontSize: 10, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '.5px' }}>Net Billed</div>
+                      <div style={{ fontSize: 16, fontWeight: 700 }}>{fmtMoney(cu.netBilled)}</div>
+                    </div>
                   </div>
-                  {cu.isPartial && cu.utilizationPct !== null && (
-                    <div style={{ fontSize: 12, color: 'var(--muted)', marginBottom: 12 }}>
-                      To date: {fmtMoney(cu.actualSpend)} (projected full month: {fmtMoney(cu.projectedSpend)} ={' '}
-                      {cu.utilizationPct.toFixed(1)}% of obligation)
+
+                  {cu.excludedServices.length > 0 && (
+                    <div style={{
+                      padding: '10px 12px', background: 'var(--bg)', borderRadius: 6,
+                      border: '1px solid var(--border)', marginBottom: 12, fontSize: 12,
+                    }}>
+                      <div style={{ fontWeight: 700, marginBottom: 4 }}>Excluded one-time charges</div>
+                      {cu.excludedServices.map(e => (
+                        <div key={e.service} style={{ display: 'flex', justifyContent: 'space-between', padding: '2px 0' }}>
+                          <span>{e.service} <span style={{ color: 'var(--muted)' }}>({e.reason})</span></span>
+                          <span style={{ fontWeight: 600 }}>{fmtMoney(e.amount)}</span>
+                        </div>
+                      ))}
                     </div>
                   )}
 
-                  {cu.overUnderAmount !== null && (
+                  {cu.trailing3MoAvg !== null && (
                     <div style={{
                       padding: '12px 14px', background: 'var(--bg)', borderRadius: 6,
                       border: '1px solid var(--border)', marginBottom: 12, fontSize: 13, lineHeight: 1.6,
                     }}>
-                      <strong style={{ color: cu.overUnderAmount < 0 ? 'var(--green)' : 'var(--red)' }}>
-                        {cu.overUnderAmount < 0 ? '−' : '+'}{fmtMoney(cu.overUnderAmount)}
-                      </strong>{' '}
-                      {cu.overUnderAmount < 0 ? 'under' : 'over'} obligation this month.{' '}
-                      {cu.trailing3MoAvg !== null && (
-                        <>Trailing 3-month average: <strong>{fmtMoney(cu.trailing3MoAvg)}</strong> — {cu.underUtilizationRisk ? 'at risk' : 'on track'}.</>
-                      )}
+                      3-month trailing avg (recurring): <strong>{fmtMoney(cu.trailing3MoAvg)}</strong> —{' '}
+                      <span style={{ color: cu.underUtilizationRisk ? 'var(--red)' : 'var(--green)', fontWeight: 700 }}>
+                        {cu.underUtilizationRisk ? 'At Risk for renewal' : 'On Track'}
+                      </span>
                     </div>
                   )}
 
                   {cu.monthsRemaining !== null && (
                     <div style={{
                       padding: '12px 14px', border: '1px solid var(--border)', borderRadius: 6,
-                      borderLeft: `3px solid ${cu.expiryWarning ? 'var(--red)' : 'var(--blue)'}`, marginBottom: 12,
+                      borderLeft: `3px solid ${cu.expiryWarning ? '#B85C00' : 'var(--blue)'}`, marginBottom: 12,
                     }}>
                       <div style={{ fontSize: 12, fontWeight: 600 }}>
-                        Commitment expires in {cu.monthsRemaining} month{cu.monthsRemaining !== 1 ? 's' : ''}
-                        {cu.commitmentEndDate ? ` (${fmtMonthLabel(cu.commitmentEndDate.slice(0, 7))})` : ''}
+                        {cu.commitmentType} expires
+                        {cu.commitmentEndDate ? ` ${fmtMonthLabel(cu.commitmentEndDate.slice(0, 7))}` : ''} —{' '}
+                        {cu.monthsRemaining} month{cu.monthsRemaining !== 1 ? 's' : ''} remaining
                       </div>
                       {cu.expiryWarning && (
-                        <div style={{ fontSize: 12, color: 'var(--red)', marginTop: 4 }}>
-                          Renewal decision needed — current pricing vs. market rate analysis recommended.
+                        <div style={{ fontSize: 12, color: '#B85C00', marginTop: 4 }}>
+                          Renewal planning recommended — current pricing vs. market rate analysis advised.
                         </div>
                       )}
                     </div>
@@ -469,7 +545,7 @@ export default function SpendInsights() {
             )}
           </div>
 
-          {/* ── SECTION 4: Additional Opportunities ───────────────────────── */}
+          {/* ── SECTION 4: Additional Opportunities (Critical → High → Medium → Low) ── */}
           <div className="card">
             <div className="card-title">Additional Opportunities</div>
             {opportunities.length === 0 ? (

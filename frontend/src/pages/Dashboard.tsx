@@ -162,18 +162,21 @@ function buildCostChartData(costData: CostHistorySummary) {
     const idx = top.indexOf(svc)
     return idx >= 0 ? COST_PALETTE[idx] : COST_OTHER_COLOR
   }
+  const patternFor = new Map(costData.byService.map(s => [s.service, s.pattern]))
   const chartData = months.map(month => {
     const meta = monthlyByMonth.get(month)
     const isPartial = meta?.isPartial ?? false
     const ratio = isPartial ? (meta?.completionRatio ?? 1) : 1
-    // The partial month's bar shows PROJECTED full-month height, not raw to-date —
-    // otherwise it always looks artificially short next to a complete prior month.
+    // The partial month's bar shows PROJECTED full-month height for RECURRING charges
+    // only — a one-time charge (Amazon Marketplace, Enterprise Support, …) already
+    // happened in full and is shown as-is, never scaled up by the day-of-month ratio.
     const row: Record<string, number | string | boolean> = { month: fmtCostMonth(month), isPartial }
     for (const svc of top) row[svc] = 0
     row.Other = 0
     for (const s of costData.byService) {
       const raw = s.months[month] ?? 0
-      const v = isPartial && ratio > 0 ? raw / ratio : raw
+      const shouldProject = isPartial && ratio > 0 && s.pattern !== 'one_time' && s.pattern !== 'credit'
+      const v = shouldProject ? raw / ratio : raw
       if (top.includes(s.service)) {
         row[s.service] = (row[s.service] as number) + v
       } else {
@@ -182,7 +185,11 @@ function buildCostChartData(costData: CostHistorySummary) {
     }
     return row
   })
-  return { chartData, seriesKeys: [...top, 'Other'], colorFor }
+  return { chartData, seriesKeys: [...top, 'Other'], colorFor, patternFor }
+}
+
+const PATTERN_LABEL: Record<string, string> = {
+  one_time: 'One-Time', recurring: 'Recurring', credit: 'Credit', mixed: 'Mixed',
 }
 
 function CostKpiCard({
@@ -266,6 +273,7 @@ function TopServicesTable({
             <thead>
               <tr>
                 <th>Service</th>
+                <th>Type</th>
                 <th>{currentMonthLabel}{anyPartial ? ' (proj.)' : ''}</th>
                 <th>Last Month</th>
                 <th>MoM Delta</th>
@@ -278,11 +286,17 @@ function TopServicesTable({
                 const down = s.momDelta < -0.5
                 const cls = up ? 'up' : down ? 'down' : 'flat' // .up=red (cost increase), .down=green (cost decrease)
                 const arrow = up ? '▲' : down ? '▼' : '—'
-                const displayAmount = s.isPartial ? s.projectedAmount : s.currentMonth
+                const wasProjected = s.isPartial && s.pattern === 'recurring'
+                const displayAmount = wasProjected ? s.projectedAmount : s.currentMonth
                 return (
                   <tr key={s.service}>
                     <td style={{ fontWeight: 600 }}>{s.service}</td>
-                    <td style={s.isPartial ? { fontStyle: 'italic', color: 'var(--blue)' } : undefined}>
+                    <td>
+                      {s.pattern === 'one_time' && <span className="badge badge-blue">One-Time</span>}
+                      {s.pattern === 'credit' && <span className="badge badge-green">Credit</span>}
+                      {s.pattern === 'recurring' && <span style={{ color: 'var(--muted)', fontSize: 12 }}>Recurring</span>}
+                    </td>
+                    <td style={wasProjected ? { fontStyle: 'italic', color: 'var(--blue)' } : undefined}>
                       {fmtMoney(displayAmount)}
                     </td>
                     <td>{fmtMoney(s.previousMonth)}</td>
@@ -303,7 +317,8 @@ function TopServicesTable({
       )}
       {anyPartial && (
         <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 8 }}>
-          {currentMonthLabel} figures are projected to full month based on the current daily run rate.
+          Recurring {currentMonthLabel} figures are projected to full month based on the current daily run rate.
+          One-time and credit charges are shown as actual — not extrapolated.
         </div>
       )}
     </div>
@@ -454,6 +469,13 @@ export default function Dashboard() {
   const costHasData = !!costData && costData.monthlyTotals.length > 0
   const costChart = costHasData ? buildCostChartData(costData!) : null
 
+  const oneTimeChargesThisMonth = currentMonthPartial && costData
+    ? costData.byService
+        .filter(s => s.pattern === 'one_time' && (s.months[currentMonthPartial.month] ?? 0) > 0)
+        .map(s => ({ service: s.service, amount: s.months[currentMonthPartial.month] }))
+        .sort((a, b) => b.amount - a.amount)
+    : []
+
   const hasSteps = narr && narr.prevNextSteps.length > 0
   const hasJoel  = narr && narr.dataSnapshot.joelNotes
 
@@ -462,7 +484,11 @@ export default function Dashboard() {
       <h1 className="page-title">Dashboard</h1>
 
       {costData?.isPartial && latestCostMonth && (
-        <PartialMonthBanner month={latestCostMonth.month} completionRatio={latestCostMonth.completionRatio} />
+        <PartialMonthBanner
+          month={latestCostMonth.month}
+          completionRatio={latestCostMonth.completionRatio}
+          oneTimeCharges={oneTimeChargesThisMonth}
+        />
       )}
 
       {/* ── CONTROLS ─────────────────────────────────────────────────────── */}
@@ -635,7 +661,11 @@ export default function Dashboard() {
                             const isPartial = (payload?.[0]?.payload as { isPartial?: boolean } | undefined)?.isPartial
                             return isPartial ? `${label} (projected)` : String(label)
                           }}
-                          formatter={(v, name) => [fmtMoney(Number(v ?? 0)), String(name)]}
+                          formatter={(v, name) => {
+                            const pattern = costChart.patternFor.get(String(name))
+                            const typeLabel = pattern ? ` [${PATTERN_LABEL[pattern] ?? pattern}]` : ''
+                            return [fmtMoney(Number(v ?? 0)) + typeLabel, String(name)]
+                          }}
                           contentStyle={{ fontSize: 12 }}
                         />
                         <Legend wrapperStyle={{ fontSize: 11, paddingTop: 8 }} />

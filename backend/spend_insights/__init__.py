@@ -63,22 +63,34 @@ def _fmt(n: float) -> str:
     return f'${n:,.2f}'
 
 
-def _commitment_context_block(commitment_utilization: dict) -> str:
-    cu = commitment_utilization
-    term = cu.get('commitmentTermYears')
-    ctype = cu.get('commitmentType')
-    annual = cu.get('commitmentAnnualValue') or 0.0
-    monthly = cu['monthlyObligation']
-    util_pct = cu['utilizationPct']
-    return f"""IMPORTANT CONTEXT: This customer has a {term}-year {ctype} commitment
-with AWS at {_fmt(annual)}/year ({_fmt(monthly)}/month).
-Current month spend is {_fmt(cu['actualSpend'])} ({util_pct}% of obligation).
+def _one_time_breakdown_text(commitment_utilization: dict) -> str:
+    excluded = commitment_utilization.get('excludedServices') or []
+    if not excluded:
+        return '(none)'
+    return ', '.join(f"{e['service']} ({_fmt(e['amount'])})" for e in excluded)
 
-Do NOT recommend purchasing additional Savings Plans.
-Instead, analyze whether they are on track to consume their commitment.
-If under-utilizing, identify which workloads or projects could
-consume more of the committed capacity.
-If over-utilizing, identify what is driving spend above commitment."""
+
+def _anomaly_lines(anomalies: list) -> str:
+    return '\n'.join(
+        f"  - {a['service']}: {_fmt(a['currentAmount'])} [{a.get('flagType') or a['type']}] — {a['explanation']}"
+        for a in anomalies
+    ) or '  (none detected)'
+
+
+def _correlation_lines(correlations: list) -> str:
+    return '\n'.join(
+        f"  - {c['service']}: spend {c['spendTrend']}, signal {c['signalTrend']} — {c['interpretation']}"
+        for c in correlations
+    ) or '  (no comparable signal data)'
+
+
+def _opportunity_lines(opportunities: list) -> str:
+    return '\n'.join(
+        f"  - [{o['priority']}] {o['service']} ({o['category']}): current {_fmt(o['currentCost'])}, "
+        f"est. savings {_fmt(o['estimatedSavings']) if o['estimatedSavings'] > 0 else 'N/A — risk mitigation'} "
+        f"— {o['action']}"
+        for o in opportunities
+    ) or '  (none identified)'
 
 
 def _build_prompt(
@@ -92,35 +104,62 @@ def _build_prompt(
     correlations: list,
     opportunities: list,
 ) -> str:
-    anomaly_lines = '\n'.join(
-        f"  - {a['service']}: {_fmt(a['currentAmount'])} ({a['type']}) — {a['explanation']}"
-        for a in anomalies
-    ) or '  (none detected)'
-
-    correlation_lines = '\n'.join(
-        f"  - {c['service']}: spend {c['spendTrend']}, signal {c['signalTrend']} — {c['interpretation']}"
-        for c in correlations
-    ) or '  (no comparable signal data)'
-
-    opportunity_lines = '\n'.join(
-        f"  - [{o['priority']}] {o['service']} ({o['category']}): "
-        f"current {_fmt(o['currentCost'])}, est. savings {_fmt(o['estimatedSavings'])}/mo — {o['action']}"
-        for o in opportunities
-    ) or '  (none identified)'
-
+    anomaly_lines = _anomaly_lines(anomalies)
+    correlation_lines = _correlation_lines(correlations)
+    opportunity_lines = _opportunity_lines(opportunities)
     mom_pct_str = f'{mom_pct:+.1f}%' if mom_pct is not None else 'n/a'
 
     if commitment_utilization is not None:
-        coverage_line = _commitment_context_block(commitment_utilization)
-    else:
-        coverage_line = f'Savings Plan coverage: {coverage_pct:.1f}% (target: 70-80%)'
+        cu = commitment_utilization
+        return f"""You are a senior AWS cost optimization consultant analyzing spend for {customer_name}.
+
+BILLING CONTEXT:
+- {customer_name} has a {cu.get('commitmentTermYears')}-year {cu.get('commitmentType')} commitment at \
+{_fmt(cu.get('commitmentAnnualValue') or 0.0)}/year ({_fmt(cu['monthlyObligation'])}/month)
+- Current month recurring spend: {_fmt(cu['recurringSpend'])} ({cu['utilizationPct']:.1f}% of obligation)
+- One-time charges this month (excluded from EDP calc): {_fmt(cu['oneTimeCharges'])}
+  Breakdown: {_one_time_breakdown_text(cu)}
+- Credits applied: {_fmt(cu['credits'])}
+
+ANOMALIES THIS MONTH:
+{anomaly_lines}
+
+For each anomaly, provide context:
+- Amazon Marketplace charges are one-time license purchases (e.g. Zscaler). Do not treat as trending.
+  Note as software licensing event.
+- Savings Plan Unused indicates committed capacity not being consumed. On EDP this is double-waste —
+  flag as priority concern.
+- Enterprise Support is a flat monthly fee — not a trend signal.
+- AWS Partner Pricing Adjustment is a billing correction — not recurring.
+
+THRESHOLD-BASED OPPORTUNITIES:
+{opportunity_lines}
+
+EDP BURN RATE:
+Trailing 3-month recurring average: {_fmt(cu.get('trailing3MoAvg') or 0.0)}
+Monthly obligation: {_fmt(cu['monthlyObligation'])}
+Status: {'ON TRACK' if cu.get('onTrack') else 'AT RISK — below 85% threshold'}
+
+SIGNAL VS SPEND CORRELATIONS:
+{correlation_lines}
+
+Generate 5-7 specific, prioritized insights. Format each as:
+PRIORITY [Critical/High/Medium/Low]: [Title]
+Situation: [specific numbers]
+Meaning: [business impact]
+Action: [specific recommendation]
+Est. Savings: [dollar amount or "N/A — risk mitigation"]
+
+Lead with the highest-priority items. The EDP burn rate and unused Savings Plans are more urgent than
+compute right-sizing in this context.
+Be specific — name services, amounts, and account IDs where relevant."""
 
     return f"""You are a senior AWS cost optimization consultant analyzing spend data for {customer_name}.
 
 Billing data analysis:
 Total monthly spend: {_fmt(total_spend)}
 MoM change: {_fmt(mom_change)} ({mom_pct_str})
-{coverage_line}
+Savings Plan coverage: {coverage_pct:.1f}% (target: 70-80%)
 
 Anomalies detected:
 {anomaly_lines}
@@ -203,13 +242,17 @@ def _handle_get(req: func.HttpRequest, customer_id: str) -> func.HttpResponse:
     commitment_utilization = None
     if has_commitment:
         commitment_utilization = compute_commitment_utilization(
-            commitment, cost_summary['monthlyTotals'], months_in_window, is_partial, completion_ratio)
+            commitment, cost_summary['monthlyTotals'], months_in_window, by_service,
+            is_partial, completion_ratio,
+        )
     else:
         coverage_analysis = compute_coverage_analysis(
             cost_summary['savingsPlanCoverage'], by_service, months_in_window, is_partial, completion_ratio)
 
     opportunities = compute_opportunities(
         by_service, coverage_analysis, current_month,
+        months_in_window=months_in_window,
+        monthly_obligation=commitment_utilization['monthlyObligation'] if commitment_utilization else None,
         skip_savings_plan_opportunity=has_commitment,
         is_partial=is_partial, completion_ratio=completion_ratio,
     )
