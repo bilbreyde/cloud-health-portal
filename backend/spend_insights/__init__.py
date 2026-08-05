@@ -8,6 +8,7 @@ from openai import AzureOpenAI
 from shared import cosmos_client
 from shared.models import Report
 from shared.response_helpers import cors_options, cors_response
+from shared.cost_classifier import should_suppress_for_partial_month
 from shared.spend_insights_engine import (
     compute_anomalies,
     compute_commitment_utilization,
@@ -103,12 +104,21 @@ def _build_prompt(
     anomalies: list,
     correlations: list,
     opportunities: list,
+    is_partial: bool,
+    sp_unused: float,
 ) -> str:
     anomaly_lines = _anomaly_lines(anomalies)
     correlation_lines = _correlation_lines(correlations)
     opportunity_lines = _opportunity_lines(opportunities)
     mom_pct_str = f'{mom_pct:+.1f}%' if mom_pct is not None else 'n/a'
     mom_change_str = _fmt(mom_change) if mom_change is not None else 'n/a (no complete prior month to compare)'
+    # SP Unused is billing-lag-distorted mid-month — never show the AI a live figure for
+    # it on a partial month, so it can't hallucinate trend commentary about a number that
+    # hasn't settled yet.
+    sp_unused_line = (
+        f'SP Unused: {_fmt(sp_unused)}' if not is_partial
+        else 'SP Unused: Not shown — pending month-end true-up'
+    )
 
     if commitment_utilization is not None:
         cu = commitment_utilization
@@ -121,6 +131,7 @@ BILLING CONTEXT:
 - One-time charges this month (excluded from EDP calc): {_fmt(cu['oneTimeCharges'])}
   Breakdown: {_one_time_breakdown_text(cu)}
 - Credits applied: {_fmt(cu['credits'])}
+- {sp_unused_line}
 
 ANOMALIES THIS MONTH:
 {anomaly_lines}
@@ -161,6 +172,7 @@ Billing data analysis:
 Total monthly spend: {_fmt(total_spend)}
 MoM change: {mom_change_str} ({mom_pct_str})
 Savings Plan coverage: {coverage_pct:.1f}% (target: 70-80%)
+{sp_unused_line}
 
 Anomalies detected:
 {anomaly_lines}
@@ -236,7 +248,16 @@ def _handle_get(req: func.HttpRequest, customer_id: str) -> func.HttpResponse:
     is_partial = cost_summary['isPartial']
     completion_ratio = cost_summary['completionRatio']
 
-    anomalies = compute_anomalies(by_service, months_in_window, is_partial, completion_ratio)
+    # SP/RI true-up lines (Savings Plan Unused, SP/RI Negation, ...) are billing-lag
+    # artifacts on a partial month — get_cost_history_summary already drops them from
+    # by_service's current-month values, but filter explicitly here too so anomaly
+    # detection never sees them for the current month even if it's fed a different
+    # by_service shape in the future.
+    services_data = by_service
+    if is_partial:
+        services_data = [s for s in by_service if not should_suppress_for_partial_month(s['service'])]
+
+    anomalies = compute_anomalies(services_data, months_in_window, is_partial, completion_ratio)
     correlations = compute_correlations(by_service, trend_dicts, months_in_window, is_partial, completion_ratio)
 
     coverage_analysis = None
@@ -274,6 +295,14 @@ def _handle_get(req: func.HttpRequest, customer_id: str) -> func.HttpResponse:
     mom_change = (total_spend - prior_spend) if prior_spend is not None else None
     mom_pct = (mom_change / prior_spend * 100) if (mom_change is not None and prior_spend) else None
 
+    def _current_month_val(name: str) -> float:
+        svc = next((s for s in by_service if s['service'].strip().lower() == name.lower()), None)
+        return svc['months'].get(current_month, 0.0) if svc else 0.0
+
+    # 0.0 automatically on a partial month — get_cost_history_summary already omits
+    # these services' current-month value from by_service (rules 4/11).
+    sp_unused = _current_month_val('Savings Plan - Unused') + _current_month_val('Database Savings Plan - Unused')
+
     prompt = _build_prompt(
         customer_name=customer.name,
         total_spend=total_spend,
@@ -284,6 +313,8 @@ def _handle_get(req: func.HttpRequest, customer_id: str) -> func.HttpResponse:
         anomalies=anomalies,
         correlations=correlations,
         opportunities=opportunities,
+        is_partial=is_partial,
+        sp_unused=sp_unused,
     )
     if is_partial:
         days_elapsed, days_in_month = month_day_counts(current_month)

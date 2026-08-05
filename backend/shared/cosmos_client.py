@@ -7,7 +7,7 @@ from typing import Optional
 from azure.cosmos import CosmosClient, PartitionKey, exceptions
 
 from .models import CostHistoryRecord, Customer, ExceptionRecord, MarketplacePurchase, Report, Template, TrendData, Upload
-from .cost_classifier import classify_charge_bucket, classify_service
+from .cost_classifier import classify_charge_bucket, classify_service, should_suppress_for_partial_month
 from .cost_classifier import project_amount as classify_project_amount
 from .spend_insights_engine import is_partial_month, project_amount
 
@@ -524,6 +524,16 @@ def get_cost_history_summary(customer_id: str, months: list) -> dict:
     if not records:
         return empty
 
+    # ── partial-month detection ────────────────────────────────────────────────
+    # The most recent month can be a real, still-in-progress calendar month with
+    # fewer days of billing data than every prior (closed) month — comparing its
+    # raw to-date total against a full prior month understates MoM change and can
+    # look like a cost decrease that isn't real. is_partial/completion_ratio drive
+    # every MoM figure below; a closed month is always (False, 1.0), a no-op.
+    current_month = months_sorted[-1]
+    previous_month = months_sorted[-2] if len(months_sorted) >= 2 else None
+    is_partial, completion_ratio = is_partial_month(current_month)
+
     # ── monthly totals (direct / indirect / net) ──────────────────────────────
     direct_by_month: dict[str, float] = {m: 0.0 for m in months_sorted}
     indirect_by_month: dict[str, float] = {m: 0.0 for m in months_sorted}
@@ -541,6 +551,14 @@ def get_cost_history_summary(customer_id: str, months: list) -> dict:
     gross_by_month: dict[str, float] = {m: 0.0 for m in months_sorted}  # sum of positive-amount lines only
 
     for r in records:
+        # SP/RI true-up lines (Savings Plan Unused, SP/RI Negation, ...) are billing-lag
+        # artifacts that resolve at month-end true-up — on the partial current month
+        # they're dropped from the record set entirely: not direct/indirect totals, not
+        # any bucket, not by_service_month (so they don't surface in byService/anomalies/
+        # opportunities either). Prior closed months are unaffected.
+        if is_partial and r.month == current_month and should_suppress_for_partial_month(r.service):
+            continue
+
         normalized_service = re.sub(r'\s+', ' ', r.service.strip().lower())
         if r.chargeType == 'indirect':
             indirect_by_month[r.month] = indirect_by_month.get(r.month, 0.0) + r.amount
@@ -562,16 +580,6 @@ def get_cost_history_summary(customer_id: str, months: list) -> dict:
     marketplace_amount_by_month = next(
         (mv for s, mv in by_service_month.items() if s.strip().lower() == 'amazon marketplace'), {},
     )
-
-    # ── partial-month detection ────────────────────────────────────────────────
-    # The most recent month can be a real, still-in-progress calendar month with
-    # fewer days of billing data than every prior (closed) month — comparing its
-    # raw to-date total against a full prior month understates MoM change and can
-    # look like a cost decrease that isn't real. is_partial/completion_ratio drive
-    # every MoM figure below; a closed month is always (False, 1.0), a no-op.
-    current_month = months_sorted[-1]
-    previous_month = months_sorted[-2] if len(months_sorted) >= 2 else None
-    is_partial, completion_ratio = is_partial_month(current_month)
 
     monthly_totals = []
     for m in months_sorted:

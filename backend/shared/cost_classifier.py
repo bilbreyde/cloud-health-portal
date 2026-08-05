@@ -433,3 +433,28 @@ def classify_charge_bucket(service_name: str) -> str:
         return 'billing_adjustment'
 
     return 'infrastructure'
+
+
+# Service-name substrings for SP/RI true-up lines that are billing-lag artifacts and
+# resolve at month-end true-up — showing them mid-month is misleading, so on a partial
+# month they are suppressed entirely (not just excluded from the infrastructure total,
+# but dropped from every bucket, anomaly/opportunity list, and AI prompt context).
+_SUPPRESS_FOR_PARTIAL_PATTERNS = [
+    "savings plan - unused",
+    "database savings plan - unused",
+    "compute savings plan - unused",
+    "savings plan negation",
+    "savings plan - negation",
+    "ri negation",
+    "reserved instance negation",
+    "database savings plan negation",
+    "elasticache - database savings plan negation",
+    "ec2 container service - savings plan negation",
+    "rds - database savings plan negation",
+    "dynamodb - database savings plan negation",
+]
+
+
+def should_suppress_for_partial_month(service_name: str) -> bool:
+    service_lower = service_name.lower()
+    return any(p in service_lower for p in _SUPPRESS_FOR_PARTIAL_PATTERNS)

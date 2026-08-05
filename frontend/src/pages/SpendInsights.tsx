@@ -68,6 +68,31 @@ const PRIORITY_BADGE: Record<OpportunityPriority, string> = {
 
 const TREND_ARROW: Record<string, string> = { up: '▲', down: '▼', flat: '—' }
 
+// Mirrors shared.cost_classifier.should_suppress_for_partial_month — SP/RI true-up
+// lines are billing-lag artifacts that resolve at month-end true-up. The backend
+// already omits these from anomalies/opportunities/excludedServices on a partial
+// month; this is a defensive client-side guard against the same patterns in case
+// stale/cached data slips through.
+const SUPPRESS_FOR_PARTIAL_PATTERNS = [
+  'savings plan - unused',
+  'database savings plan - unused',
+  'compute savings plan - unused',
+  'savings plan negation',
+  'savings plan - negation',
+  'ri negation',
+  'reserved instance negation',
+  'database savings plan negation',
+  'elasticache - database savings plan negation',
+  'ec2 container service - savings plan negation',
+  'rds - database savings plan negation',
+  'dynamodb - database savings plan negation',
+]
+
+function shouldSuppressForPartialMonth(serviceName: string): boolean {
+  const lower = serviceName.toLowerCase()
+  return SUPPRESS_FOR_PARTIAL_PATTERNS.some(p => lower.includes(p))
+}
+
 function CoverageDonut({ currentPct, targetPct }: { currentPct: number; targetPct: number }) {
   const data = [
     { name: 'Covered', value: currentPct },
@@ -460,7 +485,20 @@ export default function SpendInsights() {
 
   const cov = insights?.coverageAnalysis
   const cu = insights?.commitmentUtilization
-  const opportunities = insights?.opportunities ?? []
+  const currentMonthIsPartial = insights?.isPartial ?? false
+
+  // Defensive client-side filter (backend already excludes these for partial months) —
+  // SP/RI true-up lines are billing-lag artifacts, never shown mid-month.
+  const anomalies = (insights?.anomalies ?? []).filter(
+    a => !(currentMonthIsPartial && shouldSuppressForPartialMonth(a.service)),
+  )
+  const opportunities = (insights?.opportunities ?? []).filter(
+    o => !(currentMonthIsPartial && o.category.toLowerCase() === 'savings plan'
+      && o.service.toLowerCase().includes('unused')),
+  )
+  const excludedServices = (cu?.excludedServices ?? []).filter(
+    e => !(currentMonthIsPartial && shouldSuppressForPartialMonth(e.service)),
+  )
 
   return (
     <main className="page">
@@ -481,8 +519,8 @@ export default function SpendInsights() {
           month={insights.month}
           completionRatio={insights.completionRatio}
           oneTimeCharges={
-            insights.commitmentUtilization?.excludedServices.map(e => ({ service: e.service, amount: e.amount }))
-            ?? insights.anomalies.filter(a => a.pattern === 'one_time').map(a => ({ service: a.service, amount: a.currentAmount }))
+            excludedServices.length > 0 ? excludedServices.map(e => ({ service: e.service, amount: e.amount }))
+            : anomalies.filter(a => a.pattern === 'one_time').map(a => ({ service: a.service, amount: a.currentAmount }))
           }
         />
       )}
@@ -522,11 +560,11 @@ export default function SpendInsights() {
           {/* ── SECTION 1: Anomalies Detected ─────────────────────────────── */}
           <div className="card">
             <div className="card-title">Anomalies Detected — {fmtMonthLabel(insights.month)}</div>
-            {insights.anomalies.length === 0 ? (
+            {anomalies.length === 0 ? (
               <p style={{ color: 'var(--muted)', fontSize: 13 }}>No statistically significant anomalies this period.</p>
             ) : (
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12 }}>
-                {insights.anomalies.map(a => (
+                {anomalies.map(a => (
                   <AnomalyCard key={a.service} {...a} />
                 ))}
               </div>
@@ -571,13 +609,13 @@ export default function SpendInsights() {
                     </div>
                   </div>
 
-                  {cu.excludedServices.length > 0 && (
+                  {excludedServices.length > 0 && (
                     <div style={{
                       padding: '10px 12px', background: 'var(--bg)', borderRadius: 6,
                       border: '1px solid var(--border)', marginBottom: 12, fontSize: 12,
                     }}>
                       <div style={{ fontWeight: 700, marginBottom: 4 }}>Excluded one-time charges</div>
-                      {cu.excludedServices.map(e => (
+                      {excludedServices.map(e => (
                         <div key={e.service} style={{ display: 'flex', justifyContent: 'space-between', padding: '2px 0' }}>
                           <span>{e.service} <span style={{ color: 'var(--muted)' }}>({e.reason})</span></span>
                           <span style={{ fontWeight: 600 }}>{fmtMoney(e.amount)}</span>
@@ -619,6 +657,12 @@ export default function SpendInsights() {
                   <div style={{ fontSize: 11, color: 'var(--muted)' }}>
                     {cu.commitmentType} commitment{cu.discountRate ? ` · ~${(cu.discountRate * 100).toFixed(0)}% discount vs. on-demand` : ''}
                   </div>
+
+                  {currentMonthIsPartial && (
+                    <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 10 }}>
+                      Savings Plan true-up charges and credits are excluded from partial-month analysis — they appear at month close.
+                    </div>
+                  )}
                 </div>
               </div>
             </div>

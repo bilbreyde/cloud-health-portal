@@ -461,9 +461,11 @@ def compute_opportunities(
             'action': 'Audit Multi-AZ RDS instances — disable for dev/test environments',
         })
 
-    # g. Unused Savings Plan capacity — double-waste risk on top of a commitment
+    # g. Unused Savings Plan capacity — double-waste risk on top of a commitment.
+    # Billing-lag-distorted mid-month (rules 4/11): only surfaced once the month is
+    # complete, never on a partial month.
     sp_unused = val('Savings Plan - Unused') + val('Database Savings Plan - Unused')
-    if sp_unused > 0:
+    if not is_partial and sp_unused > 0:
         opportunities.append({
             'category': 'Savings Plan', 'service': 'Unused Savings Plan Capacity',
             'currentCost': round(sp_unused, 2), 'estimatedSavings': 0.0, 'priority': 'High',

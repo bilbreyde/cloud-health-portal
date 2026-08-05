@@ -7,6 +7,7 @@ import azure.functions as func
 from openai import AzureOpenAI
 
 from shared import cosmos_client
+from shared.cost_classifier import should_suppress_for_partial_month
 from shared.models import Report
 from shared.response_helpers import cors_options, cors_response
 
@@ -291,8 +292,15 @@ def _handle_get(customer_id: str, force: bool) -> func.HttpResponse:
             mom_change = curr_cost - last_cost
             mom_line = f"MoM change (infrastructure spend): {'+' if mom_change >= 0 else ''}${mom_change:,.2f}"
         coverage_pct = cost_summary['savingsPlanCoverage']['coveragePct']
+        # SP/RI true-up lines are billing-lag artifacts on a partial month — never let
+        # them reach the "top cost drivers" AI prompt context (rules 4/11).
+        prompt_top_services = cost_summary['topServices']
+        if curr_month.get('isPartial'):
+            prompt_top_services = [
+                s for s in prompt_top_services if not should_suppress_for_partial_month(s['service'])
+            ]
         top_svc_str = ', '.join(
-            f"{s['service']} (${s['currentMonth']:,.2f})" for s in cost_summary['topServices'][:5]
+            f"{s['service']} (${s['currentMonth']:,.2f})" for s in prompt_top_services[:5]
         )
         lines.append(f"""
 Total AWS spend context (this is actual billing, separate from optimization signal):
