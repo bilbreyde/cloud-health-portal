@@ -150,6 +150,7 @@ def _build_docx(
     exc_records: list,
     cost_summary: dict | None,
     spend_insights: dict | None,
+    marketplace_purchases: list,
     prev_next_steps: list,
     ongoing_next_steps: list,
     planned_savings: list,
@@ -302,6 +303,21 @@ def _build_docx(
             _tbl_row(tbl_cov, ['Projected Current Month Spend', _fmt(cost_summary['projectedCurrentMonth'])])
     else:
         _para(doc, 'No AWS Cost History data imported for this customer yet.')
+    _para(doc)
+
+    _h2(doc, '3.4 Software Licensing Events')
+    _para(doc,
+          'One-time AWS Marketplace software license purchases. Excluded from the infrastructure trend '
+          'analysis and EDP/commitment utilization figures elsewhere in this report.', space_after=8)
+    if marketplace_purchases:
+        tbl_lic = doc.add_table(rows=1, cols=4)
+        tbl_lic.style = 'Table Grid'
+        _tbl_header(tbl_lic, ['Month', 'Vendor', 'Amount', 'Notes'])
+        for p in marketplace_purchases:
+            vendor = p.vendorNote or 'Unidentified — see AWS Marketplace console'
+            _tbl_row(tbl_lic, [p.month, vendor, _fmt(p.amount), '' if p.vendorNote else 'No vendor note on file'])
+    else:
+        _para(doc, 'No Marketplace purchases recorded for this customer.')
     doc.add_page_break()
 
     # ── Section 4: AWS Spend Analysis & Optimization Opportunities ────────────
@@ -721,6 +737,13 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
     except Exception as exc:
         logging.warning('Cost history fetch failed (non-fatal): %s', exc)
 
+    # ── Marketplace purchases (Software Licensing Events table) ─────────────────
+    marketplace_purchases = []
+    try:
+        marketplace_purchases = cosmos_client.list_marketplace_purchases(customer_id)
+    except Exception as exc:
+        logging.warning('Marketplace purchases fetch failed (non-fatal): %s', exc)
+
     # ── AI spend insights ──────────────────────────────────────────────────────
     # Reuse the cached analysis from the spend-insights page if it's there; otherwise
     # recompute the structured tables fresh (cheap — no AI call) rather than skip the
@@ -819,6 +842,7 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
             exc_records=exc_records,
             cost_summary=cost_summary,
             spend_insights=spend_insights,
+            marketplace_purchases=marketplace_purchases,
             prev_next_steps=prev_next_steps,
             ongoing_next_steps=ongoing_next_steps,
             planned_savings=planned_savings,

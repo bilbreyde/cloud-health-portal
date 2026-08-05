@@ -5,6 +5,7 @@ import {
   ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis,
 } from 'recharts'
 import { fetchCostHistory, fetchDashboardNarrative, fetchTrends, patchCommitment } from '../api'
+import MarketplaceBanner from '../components/MarketplaceBanner'
 import PartialMonthBanner from '../components/PartialMonthBanner'
 import { useCustomer } from '../context/CustomerContext'
 import type { CostHistorySummary, DashboardNarrativeResponse, DataSnapshot, SavingsPlanCoverage, ServiceRow, TrendsResponse } from '../types'
@@ -14,6 +15,10 @@ const MONTH_ABBR = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep
 // Validated categorical palette (dataviz skill) — fixed order, never cycled.
 const COST_PALETTE = ['#2a78d6', '#eb6834', '#1baf7a', '#eda100', '#e87ba4', '#008300', '#4a3aa7']
 const COST_OTHER_COLOR = '#898781'
+// Marketplace is deliberately outside the infrastructure palette — steel blue, visually
+// distinct from every service color, so a one-time software purchase never reads as
+// part of the recurring infrastructure stack.
+const MARKETPLACE_COLOR = '#4A6FA5'
 
 function fmtCostMonth(m: string) {
   const [y, mo] = m.split('-').map(Number)
@@ -151,29 +156,51 @@ function ExceptionDeltaWidget({ snapshot }: { snapshot: DataSnapshot }) {
   )
 }
 
+const MARKETPLACE_SERVICE = 'amazon marketplace'
+
+interface CostChartRow {
+  month: string
+  isPartial: boolean
+  _infrastructureSpend: number
+  _marketplaceAmount: number
+  _marketplaceNote: string | null
+  _netBilled: number
+  [service: string]: number | string | boolean | null
+}
+
 function buildCostChartData(costData: CostHistorySummary) {
   const monthlyByMonth = new Map(costData.monthlyTotals.map(m => [m.month, m]))
   const months = costData.monthlyTotals.map(m => m.month)
-  const totals = costData.byService
+  // Marketplace gets its own dedicated series below — never grouped into the
+  // infrastructure service stack or the "Other" bucket.
+  const infraServices = costData.byService.filter(s => s.service.trim().toLowerCase() !== MARKETPLACE_SERVICE)
+  const totals = infraServices
     .map(s => ({ service: s.service, total: Object.values(s.months).reduce((a, b) => a + b, 0) }))
     .sort((a, b) => b.total - a.total)
   const top = totals.slice(0, 7).map(t => t.service)
   const colorFor = (svc: string) => {
+    if (svc === 'Marketplace') return MARKETPLACE_COLOR
     const idx = top.indexOf(svc)
     return idx >= 0 ? COST_PALETTE[idx] : COST_OTHER_COLOR
   }
-  const patternFor = new Map(costData.byService.map(s => [s.service, s.pattern]))
-  const chartData = months.map(month => {
+  const chartData: CostChartRow[] = months.map(month => {
     const meta = monthlyByMonth.get(month)
     const isPartial = meta?.isPartial ?? false
     const ratio = isPartial ? (meta?.completionRatio ?? 1) : 1
     // The partial month's bar shows PROJECTED full-month height for RECURRING charges
     // only — a one-time charge (Amazon Marketplace, Enterprise Support, …) already
     // happened in full and is shown as-is, never scaled up by the day-of-month ratio.
-    const row: Record<string, number | string | boolean> = { month: fmtCostMonth(month), isPartial }
+    const row: CostChartRow = {
+      month: fmtCostMonth(month),
+      isPartial,
+      _infrastructureSpend: isPartial ? (meta?.projectedInfrastructureSpend ?? 0) : (meta?.infrastructureSpend ?? 0),
+      _marketplaceAmount: meta?.marketplacePurchases?.[0]?.amount ?? 0,
+      _marketplaceNote: meta?.marketplacePurchases?.[0]?.vendorNote ?? null,
+      _netBilled: meta?.netBilled ?? 0,
+    }
     for (const svc of top) row[svc] = 0
     row.Other = 0
-    for (const s of costData.byService) {
+    for (const s of infraServices) {
       const raw = s.months[month] ?? 0
       const shouldProject = isPartial && ratio > 0 && s.pattern !== 'one_time' && s.pattern !== 'credit'
       const v = shouldProject ? raw / ratio : raw
@@ -183,13 +210,36 @@ function buildCostChartData(costData: CostHistorySummary) {
         row.Other = (row.Other as number) + v
       }
     }
+    row.Marketplace = row._marketplaceAmount
     return row
   })
-  return { chartData, seriesKeys: [...top, 'Other'], colorFor, patternFor }
+  return { chartData, seriesKeys: [...top, 'Other', 'Marketplace'], colorFor }
 }
 
-const PATTERN_LABEL: Record<string, string> = {
-  one_time: 'One-Time', recurring: 'Recurring', credit: 'Credit', mixed: 'Mixed',
+function CostHistoryTooltip({ active, payload, label }: {
+  active?: boolean
+  payload?: { payload: CostChartRow }[]
+  label?: string
+}) {
+  if (!active || !payload || payload.length === 0) return null
+  const row = payload[0].payload
+  return (
+    <div style={{
+      background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 6,
+      padding: '10px 12px', fontSize: 12, lineHeight: 1.7,
+    }}>
+      <div style={{ fontWeight: 700, marginBottom: 4 }}>{label}{row.isPartial ? ' (projected)' : ''}</div>
+      <div>Infrastructure: {fmtMoney(row._infrastructureSpend)}</div>
+      {row._marketplaceAmount > 0 && (
+        <div style={{ color: MARKETPLACE_COLOR, fontWeight: 600 }}>
+          Marketplace: {fmtMoney(row._marketplaceAmount)}{row._marketplaceNote ? ` (${row._marketplaceNote})` : ''}
+        </div>
+      )}
+      <div style={{ fontWeight: 700, borderTop: '1px solid var(--border)', marginTop: 4, paddingTop: 4 }}>
+        Total billed: {fmtMoney(row._netBilled)}
+      </div>
+    </div>
+  )
 }
 
 function CostKpiCard({
@@ -453,19 +503,21 @@ export default function Dashboard() {
   const currentMonthPartial = isLatestCurrent ? latestCostMonth : null
   const lastFullMonth = isLatestCurrent ? costTotals[costTotals.length - 2] : latestCostMonth
   const priorToLastFull = isLatestCurrent ? costTotals[costTotals.length - 3] : costTotals[costTotals.length - 2]
-  // MoM change is based on Total Billed (net = direct + indirect) — CloudHealth's "Last
-  // Month" figure — not direct charges alone, so it moves with the same number the KPI
-  // cards above it show. Both months here are always fully-closed months.
-  const costMomDelta = lastFullMonth && priorToLastFull ? lastFullMonth.netCost - priorToLastFull.netCost : null
-  const costMomPct = costMomDelta !== null && priorToLastFull && priorToLastFull.netCost !== 0
-    ? (costMomDelta / priorToLastFull.netCost) * 100 : null
+  // MoM change is INFRASTRUCTURE spend only (rule 8) — never total/net billed, which
+  // still carries Marketplace and other one-time charges. Both months here are always
+  // fully-closed months, satisfying "prior month must be complete".
+  const costMomDelta = lastFullMonth && priorToLastFull
+    ? lastFullMonth.infrastructureSpend - priorToLastFull.infrastructureSpend : null
+  const costMomPct = costMomDelta !== null && priorToLastFull && priorToLastFull.infrastructureSpend !== 0
+    ? (costMomDelta / priorToLastFull.infrastructureSpend) * 100 : null
 
-  // Projected MoM: current (partial, projected) month vs. the last full month — NEVER
-  // the raw to-date amount, which is naturally smaller and would read as a cost drop.
+  // Projected MoM: current (partial, projected) month's infra spend vs. the last full
+  // month's infra spend — NEVER the raw to-date amount, which is naturally smaller and
+  // would read as a cost drop. Marketplace is never part of either side.
   const projectedMomDelta = currentMonthPartial && lastFullMonth
-    ? currentMonthPartial.projectedDirectCharges - lastFullMonth.directCharges : null
-  const projectedMomPct = projectedMomDelta !== null && lastFullMonth && lastFullMonth.directCharges !== 0
-    ? (projectedMomDelta / lastFullMonth.directCharges) * 100 : null
+    ? currentMonthPartial.projectedInfrastructureSpend - lastFullMonth.infrastructureSpend : null
+  const projectedMomPct = projectedMomDelta !== null && lastFullMonth && lastFullMonth.infrastructureSpend !== 0
+    ? (projectedMomDelta / lastFullMonth.infrastructureSpend) * 100 : null
   const costHasData = !!costData && costData.monthlyTotals.length > 0
   const costChart = costHasData ? buildCostChartData(costData!) : null
 
@@ -475,6 +527,22 @@ export default function Dashboard() {
         .map(s => ({ service: s.service, amount: s.months[currentMonthPartial.month] }))
         .sort((a, b) => b.amount - a.amount)
     : []
+
+  // ── Derived: Marketplace / Software Licensing ─────────────────────────────
+  // Banner: any month (not just current/prior) with a Marketplace purchase that has
+  // no vendor note yet — a data-hygiene nudge, independent of the reporting window.
+  const unnotedMarketplace = costTotals.flatMap(m =>
+    m.marketplacePurchases.filter(p => !p.vendorNote).map(p => ({ month: m.month, amount: p.amount })))
+
+  // Software Licensing KPI card: Marketplace purchases in the current or prior month.
+  const recentMarketplace = costTotals.slice(-2)
+    .flatMap(m => m.marketplacePurchases.map(p => ({ ...p, month: m.month })))
+  const recentMarketplaceTotal = recentMarketplace.reduce((sum, p) => sum + p.amount, 0)
+  const recentMarketplaceLabel = recentMarketplace.length > 1
+    ? `${recentMarketplace.length} purchases`
+    : (recentMarketplace[0]?.vendorNote || 'Unidentified purchase')
+
+  const lastFullMonthMarketplace = lastFullMonth?.marketplacePurchases?.[0]
 
   const hasSteps = narr && narr.prevNextSteps.length > 0
   const hasJoel  = narr && narr.dataSnapshot.joelNotes
@@ -490,6 +558,8 @@ export default function Dashboard() {
           oneTimeCharges={oneTimeChargesThisMonth}
         />
       )}
+
+      <MarketplaceBanner purchases={unnotedMarketplace} />
 
       {/* ── CONTROLS ─────────────────────────────────────────────────────── */}
       <div className="card">
@@ -594,25 +664,29 @@ export default function Dashboard() {
               {/* KPI cards */}
               <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 20 }}>
                 <CostKpiCard
-                  label="Direct Charges"
-                  value={lastFullMonth ? fmtMoney(lastFullMonth.directCharges) : '—'}
+                  label="Infrastructure Spend"
+                  value={lastFullMonth ? fmtMoney(lastFullMonth.infrastructureSpend) : '—'}
                   accent={COST_PALETTE[0]}
-                  sub={lastFullMonth ? `${fmtCostMonth(lastFullMonth.month)} — raw AWS service costs` : undefined}
+                  sub={lastFullMonth ? `${fmtCostMonth(lastFullMonth.month)} — recurring compute, storage, network` : undefined}
+                  tooltip="Recurring compute, storage, network — ex. licensing. Excludes Marketplace, Enterprise Support, and other one-time/flat-fee charges."
                 />
                 <CostKpiCard
-                  label="Total Billed (Net)"
-                  value={lastFullMonth ? fmtMoney(lastFullMonth.netCost) : '—'}
+                  label="Total Billed"
+                  value={lastFullMonth ? fmtMoney(lastFullMonth.netBilled) : '—'}
                   accent={COST_PALETTE[0]}
-                  sub="Direct + indirect charges"
-                  tooltip="Direct AWS service charges plus indirect charges (backup storage, data transfer, support fees). Matches CloudHealth 'Last Month' figure."
+                  sub={lastFullMonthMarketplace
+                    ? `*Includes ${fmtK(lastFullMonthMarketplace.amount)} Marketplace purchase`
+                    : 'Everything billed, net of credits'}
+                  tooltip="Every charge for the month — direct + indirect, including one-time Marketplace purchases — net of credits and adjustments."
                 />
                 <CostKpiCard
-                  label="MoM Change"
+                  label="Infrastructure MoM"
                   value={costMomDelta !== null
                     ? `${costMomDelta >= 0 ? '+' : ''}${fmtMoney(costMomDelta)}`
                     : '—'}
                   accent={costMomDelta !== null ? (costMomDelta > 0 ? 'var(--red)' : 'var(--green)') : undefined}
                   sub={costMomPct !== null ? `${costMomPct >= 0 ? '+' : ''}${costMomPct.toFixed(1)}%` : undefined}
+                  tooltip="Compares recurring infrastructure spend only. One-time Marketplace purchases excluded."
                 />
                 <CostKpiCard
                   label="Savings Plan Coverage"
@@ -620,11 +694,20 @@ export default function Dashboard() {
                   accent={COST_PALETTE[0]}
                   sub="EC2 compute covered by Savings Plan"
                 />
+                {recentMarketplace.length > 0 && (
+                  <CostKpiCard
+                    label="Software Licensing"
+                    value={fmtMoney(recentMarketplaceTotal)}
+                    accent="#0078D4"
+                    sub={recentMarketplaceLabel}
+                    tooltip="One-time AWS Marketplace software license purchases in the current or prior month. Excluded from infrastructure trend and MoM."
+                  />
+                )}
                 <CostKpiCard
                   label="Current Month (Partial)"
-                  value={currentMonthPartial ? `${fmtMoney(currentMonthPartial.directCharges)} to date` : '—'}
+                  value={currentMonthPartial ? `${fmtMoney(currentMonthPartial.infrastructureSpend)} to date` : '—'}
                   accent={COST_PALETTE[0]}
-                  sub={currentMonthPartial ? `Projected: ${fmtMoney(currentMonthPartial.projectedDirectCharges)}` : undefined}
+                  sub={currentMonthPartial ? `Projected: ${fmtMoney(currentMonthPartial.projectedInfrastructureSpend)}` : undefined}
                   subColor={currentMonthPartial ? 'var(--blue)' : undefined}
                   sub2={currentMonthPartial
                     ? (() => {
@@ -647,7 +730,7 @@ export default function Dashboard() {
                 <div className="card" style={{ flex: '13 1 520px', minWidth: 0, marginBottom: 0 }}>
                   <div className="card-title">AWS Cost History</div>
                   <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: -8, marginBottom: 10 }}>
-                    Total Billed (net) per month — direct + indirect charges by service
+                    Infrastructure spend by service, with Marketplace shown as a separate one-time series
                   </div>
                   {costLoading && <Skeleton height={340} />}
                   {!costLoading && costChart && (
@@ -656,20 +739,17 @@ export default function Dashboard() {
                         <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" vertical={false} />
                         <XAxis dataKey="month" tick={{ fontSize: 11 }} />
                         <YAxis tickFormatter={v => fmtK(v as number)} tick={{ fontSize: 11 }} width={56} />
-                        <Tooltip
-                          labelFormatter={(label, payload) => {
-                            const isPartial = (payload?.[0]?.payload as { isPartial?: boolean } | undefined)?.isPartial
-                            return isPartial ? `${label} (projected)` : String(label)
-                          }}
-                          formatter={(v, name) => {
-                            const pattern = costChart.patternFor.get(String(name))
-                            const typeLabel = pattern ? ` [${PATTERN_LABEL[pattern] ?? pattern}]` : ''
-                            return [fmtMoney(Number(v ?? 0)) + typeLabel, String(name)]
-                          }}
-                          contentStyle={{ fontSize: 12 }}
-                        />
+                        <Tooltip content={<CostHistoryTooltip />} />
                         <Legend wrapperStyle={{ fontSize: 11, paddingTop: 8 }} />
-                        {costChart.seriesKeys.map(svc => (
+                        {costChart.seriesKeys.map(svc => svc === 'Marketplace' ? (
+                          // Marketplace: distinct color + dashed border — never faded for a
+                          // partial month, since a one-time purchase is never projected.
+                          <Bar
+                            key={svc} dataKey={svc} stackId="cost"
+                            fill={MARKETPLACE_COLOR} stroke={MARKETPLACE_COLOR}
+                            strokeDasharray="4 3" strokeWidth={1.5}
+                          />
+                        ) : (
                           <Bar key={svc} dataKey={svc} stackId="cost" fill={costChart.colorFor(svc)}>
                             {costChart.chartData.map((entry, idx) => (
                               <Cell
@@ -685,7 +765,7 @@ export default function Dashboard() {
                   )}
                   {costData?.isPartial && (
                     <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 8, fontStyle: 'italic' }}>
-                      Current month bar shows projected full-month spend (lighter fill).
+                      Current month bar shows projected full-month spend (lighter fill). Marketplace (dashed border) is never projected.
                     </div>
                   )}
                 </div>

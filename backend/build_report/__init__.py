@@ -54,6 +54,7 @@ def _build_user_prompt(
     progress_narrative: str = '',
     ongoing_next_steps: list | None = None,
     cost_summary: dict | None = None,
+    marketplace_purchases: list | None = None,
 ) -> str:
     month_label = datetime(year, month, 1).strftime('%B %Y')
     total_signal = sum(curr_data.values())
@@ -151,22 +152,39 @@ def _build_user_prompt(
 
     if cost_summary and cost_summary.get('monthlyTotals'):
         totals = cost_summary['monthlyTotals']
-        curr_cost = totals[-1]['directCharges']
-        last_cost = totals[-2]['directCharges'] if len(totals) >= 2 else 0.0
+        curr_month = totals[-1]
+        prev_month = totals[-2] if len(totals) >= 2 else None
+        # Infrastructure spend only — Marketplace/one-time charges never enter this
+        # MoM comparison, and the prior month must be complete (rules 7/8).
+        curr_cost = curr_month.get('infrastructureSpend', curr_month.get('directCharges', 0.0))
+        mom_line = 'MoM change: n/a (no complete prior month to compare)'
+        if prev_month and not prev_month.get('isPartial', False):
+            last_cost = prev_month.get('infrastructureSpend', prev_month.get('directCharges', 0.0))
+            mom_line = f"MoM change (infrastructure spend): {'+' if curr_cost - last_cost >= 0 else ''}${curr_cost - last_cost:,.2f}"
         coverage_pct = cost_summary['savingsPlanCoverage']['coveragePct']
         top_svc_str = ', '.join(
             f"{s['service']} (${s['currentMonth']:,.2f})" for s in cost_summary['topServices'][:5]
         )
         lines.append(f"""
 Total AWS spend context (this is actual billing, separate from the optimization signal above):
-Current month spend: ${curr_cost:,.2f}
-Last month spend: ${last_cost:,.2f}
-MoM change: {'+' if curr_cost - last_cost >= 0 else ''}${curr_cost - last_cost:,.2f}
+Current month infrastructure spend: ${curr_cost:,.2f}
+{mom_line}
 Savings Plan coverage: {coverage_pct}%
 Top cost drivers: {top_svc_str}
 
 Note: The CloudHealth savings signal (${total_signal:,.2f}) represents optimization opportunity
 within this total spend. Keep these two metrics clearly distinct in the report.""")
+
+    if marketplace_purchases:
+        event_lines = '\n'.join(
+            f"  {p.month}: {p.vendorNote or 'Unidentified — see AWS Marketplace console'} — ${p.amount:,.0f}"
+            for p in marketplace_purchases
+        )
+        lines.append(f"""
+Software licensing events this period:
+{event_lines}
+Reference these by vendor name. Explain they are excluded from the infrastructure trend analysis
+and EDP utilization figures.""")
 
     lines.append("""
 Generate a formal cloud cost optimization consulting report.
@@ -347,6 +365,15 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         except Exception as exc:
             logging.warning('Step 5b: cost history fetch failed (non-fatal): %s', exc)
 
+        # ── Step 5c: Fetch marketplace purchases (vendor notes for AI context) ─
+        step = 'fetching marketplace purchases'
+        marketplace_purchases: list = []
+        try:
+            marketplace_purchases = cosmos_client.list_marketplace_purchases(customer_id)
+            logging.info('Step 5c done: marketplace_purchases=%d', len(marketplace_purchases))
+        except Exception as exc:
+            logging.warning('Step 5c: marketplace purchases fetch failed (non-fatal): %s', exc)
+
         # ── Step 6: Call Azure OpenAI ─────────────────────────────────────────
         step = 'calling Azure OpenAI'
         logging.info('Step 6: Calling Azure OpenAI — model=%s endpoint=%s',
@@ -377,6 +404,7 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
             progress_narrative=progress_narrative,
             ongoing_next_steps=ongoing_next_steps,
             cost_summary=cost_summary,
+            marketplace_purchases=marketplace_purchases,
         )
 
         narrative = {

@@ -208,6 +208,11 @@ export interface CostHistoryImportResult {
   error?: string
 }
 
+export interface MarketplacePurchaseLine {
+  amount: number
+  vendorNote: string | null
+}
+
 export interface CostMonthlyTotal {
   month: string
   directCharges: number
@@ -217,6 +222,21 @@ export interface CostMonthlyTotal {
   completionRatio: number
   projectedDirectCharges: number
   projectedNetCost: number
+  infrastructureSpend: number
+  projectedInfrastructureSpend: number
+  oneTimeCharges: number
+  billingAdjustments: number
+  spTrueUp: number
+  totalBilled: number
+  netBilled: number
+  marketplacePurchases: MarketplacePurchaseLine[]
+}
+
+export interface MarketplacePurchase {
+  month: string
+  amount: number
+  vendorNote: string | null
+  hasNote: boolean
 }
 
 export interface CostByService {
@@ -361,7 +381,7 @@ export interface SpendInsightsResponse {
   month: string
   totalSpend: number
   actualSpendToDate: number
-  momChange: number
+  momChange: number | null
   momPct: number | null
   isPartial: boolean
   completionRatio: number

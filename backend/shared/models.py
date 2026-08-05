@@ -321,6 +321,40 @@ class CostHistoryRecord:
 
 
 @dataclass
+class MarketplacePurchase:
+    id: str
+    customerId: str
+    month: str               # YYYY-MM
+    amount: float
+    vendorNote: Optional[str]
+    importedAt: datetime
+    updatedAt: datetime
+
+    def to_dict(self) -> dict:
+        return {
+            'id': self.id,
+            'customerId': self.customerId,
+            'month': self.month,
+            'amount': self.amount,
+            'vendorNote': self.vendorNote,
+            'importedAt': self.importedAt.isoformat(),
+            'updatedAt': self.updatedAt.isoformat(),
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> 'MarketplacePurchase':
+        return cls(
+            id=d['id'],
+            customerId=d['customerId'],
+            month=d['month'],
+            amount=float(d.get('amount', 0.0)),
+            vendorNote=d.get('vendorNote'),
+            importedAt=datetime.fromisoformat(d['importedAt']),
+            updatedAt=datetime.fromisoformat(d.get('updatedAt', d['importedAt'])),
+        )
+
+
+@dataclass
 class Template:
     id: str
     customerId: str

@@ -96,7 +96,7 @@ def _opportunity_lines(opportunities: list) -> str:
 def _build_prompt(
     customer_name: str,
     total_spend: float,
-    mom_change: float,
+    mom_change: float | None,
     mom_pct: float | None,
     coverage_pct: float | None,
     commitment_utilization: dict | None,
@@ -108,6 +108,7 @@ def _build_prompt(
     correlation_lines = _correlation_lines(correlations)
     opportunity_lines = _opportunity_lines(opportunities)
     mom_pct_str = f'{mom_pct:+.1f}%' if mom_pct is not None else 'n/a'
+    mom_change_str = _fmt(mom_change) if mom_change is not None else 'n/a (no complete prior month to compare)'
 
     if commitment_utilization is not None:
         cu = commitment_utilization
@@ -158,7 +159,7 @@ Be specific — name services, amounts, and account IDs where relevant."""
 
 Billing data analysis:
 Total monthly spend: {_fmt(total_spend)}
-MoM change: {_fmt(mom_change)} ({mom_pct_str})
+MoM change: {mom_change_str} ({mom_pct_str})
 Savings Plan coverage: {coverage_pct:.1f}% (target: 70-80%)
 
 Anomalies detected:
@@ -259,13 +260,19 @@ def _handle_get(req: func.HttpRequest, customer_id: str) -> func.HttpResponse:
 
     monthly_totals = {m['month']: m for m in cost_summary['monthlyTotals']}
     current_totals = monthly_totals.get(current_month, {})
-    # NEVER use the raw current-month amount for MoM comparison — use the projected
-    # full-month figure, which equals the raw amount whenever the month is closed.
-    total_spend = current_totals.get('projectedNetCost', current_totals.get('netCost', 0.0))
+    # MoM must compare INFRASTRUCTURE spend only (rule 8) — never total/net billed,
+    # which still carries Marketplace and other one-time charges. Use the projected
+    # full-month infrastructure figure, which equals the raw amount whenever the
+    # month is closed. The prior month must be a COMPLETE month; if it isn't (e.g. a
+    # short/gapped window), MoM is not computable and is reported as None rather than
+    # comparing against a distorted partial figure.
+    total_spend = current_totals.get('projectedInfrastructureSpend', current_totals.get('infrastructureSpend', 0.0))
     prior_month = months_in_window[-2] if len(months_in_window) >= 2 else None
-    prior_spend = monthly_totals.get(prior_month, {}).get('netCost', 0.0) if prior_month else 0.0
-    mom_change = total_spend - prior_spend
-    mom_pct = (mom_change / prior_spend * 100) if prior_spend else None
+    prior_totals = monthly_totals.get(prior_month, {}) if prior_month else {}
+    prior_month_complete = bool(prior_totals) and not prior_totals.get('isPartial', False)
+    prior_spend = prior_totals.get('infrastructureSpend', 0.0) if prior_month_complete else None
+    mom_change = (total_spend - prior_spend) if prior_spend is not None else None
+    mom_pct = (mom_change / prior_spend * 100) if (mom_change is not None and prior_spend) else None
 
     prompt = _build_prompt(
         customer_name=customer.name,
@@ -286,6 +293,21 @@ def _handle_get(req: func.HttpRequest, customer_id: str) -> func.HttpResponse:
             f"({completion_pct}% of month). The spend figures shown are PROJECTED to full month based "
             f"on daily run rate. Do not flag partial month spend as anomalies — compare only projected "
             f"figures to prior full months."
+        )
+    marketplace_events = [
+        (m['month'], p)
+        for m in cost_summary['monthlyTotals']
+        for p in m.get('marketplacePurchases', [])
+    ]
+    if marketplace_events:
+        event_lines = '\n'.join(
+            f"{m}: {p.get('vendorNote') or 'Unidentified purchase'} — {_fmt(p['amount'])}"
+            for m, p in marketplace_events
+        )
+        prompt += (
+            f"\n\nSoftware licensing events (excluded from infrastructure trend):\n{event_lines}\n"
+            f"These are one-time AWS Marketplace purchases, not recurring infrastructure. "
+            f"Reference them by vendor name when they appear in the reporting period."
         )
     if exc_summary and exc_summary.get('totalCount', 0) > 0:
         prompt += (
@@ -325,8 +347,8 @@ def _handle_get(req: func.HttpRequest, customer_id: str) -> func.HttpResponse:
         'narrative': narrative,
         'month': current_month,
         'totalSpend': round(total_spend, 2),
-        'actualSpendToDate': round(current_totals.get('netCost', 0.0), 2),
-        'momChange': round(mom_change, 2),
+        'actualSpendToDate': round(current_totals.get('netBilled', current_totals.get('netCost', 0.0)), 2),
+        'momChange': round(mom_change, 2) if mom_change is not None else None,
         'momPct': round(mom_pct, 2) if mom_pct is not None else None,
         'isPartial': is_partial,
         'completionRatio': round(completion_ratio, 4),

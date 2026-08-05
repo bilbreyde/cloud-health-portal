@@ -155,6 +155,17 @@ def _handle_import(req: func.HttpRequest, customer_id: str) -> func.HttpResponse
         source_file=filename,
     )
 
+    # Sync marketplace_purchases: one record per (customer, month) where Amazon
+    # Marketplace billed > 0. Amount is always refreshed from the CSV; vendorNote
+    # is preserved by upsert_marketplace_purchase_amount if a note already exists.
+    marketplace_by_month: dict[str, float] = {}
+    for rec in parsed['records']:
+        if rec['service'].strip().lower() == 'amazon marketplace':
+            marketplace_by_month[rec['month']] = marketplace_by_month.get(rec['month'], 0.0) + rec['amount']
+    for month, amount in marketplace_by_month.items():
+        if amount > 0:
+            cosmos_client.upsert_marketplace_purchase_amount(customer_id, month, amount)
+
     return cors_response({
         'success': True,
         'monthsImported': len(parsed['monthColumns']),

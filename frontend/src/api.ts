@@ -1,4 +1,4 @@
-import type { CommitmentContext, CostHistoryImportResult, CostHistorySummary, Customer, DashboardNarrativeResponse, ExceptionRecord, ExceptionSummary, ImportReportResponse, Report, ReportResponse, SpendInsightsResponse, TrendsResponse, UploadRecord, UploadResult } from './types'
+import type { CommitmentContext, CostHistoryImportResult, CostHistorySummary, Customer, DashboardNarrativeResponse, ExceptionRecord, ExceptionSummary, ImportReportResponse, MarketplacePurchase, Report, ReportResponse, SpendInsightsResponse, TrendsResponse, UploadRecord, UploadResult } from './types'
 
 const BASE = (import.meta.env.VITE_API_URL ?? '') + '/api'
 
@@ -191,6 +191,22 @@ export function fetchSpendInsights(
   if (params?.bust) qs.set('bust', 'true')
   const suffix = qs.toString() ? `?${qs}` : ''
   return request<SpendInsightsResponse>(`${BASE}/spend-insights/${customerId}${suffix}`)
+}
+
+export function fetchMarketplacePurchases(customerId: string): Promise<MarketplacePurchase[]> {
+  return request<MarketplacePurchase[]>(`${BASE}/marketplace-purchases/${customerId}`)
+}
+
+export function patchMarketplacePurchaseNote(
+  customerId: string,
+  month: string,
+  vendorNote: string,
+): Promise<MarketplacePurchase> {
+  return request<MarketplacePurchase>(`${BASE}/marketplace-purchases/${customerId}/${month}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ vendorNote }),
+  })
 }
 
 export function saveSpendInsightsToReport(

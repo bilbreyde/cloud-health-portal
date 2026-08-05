@@ -1,10 +1,10 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { Cell, Pie, PieChart, ResponsiveContainer } from 'recharts'
-import { fetchSpendInsights, saveSpendInsightsToReport } from '../api'
+import { fetchMarketplacePurchases, fetchSpendInsights, patchMarketplacePurchaseNote, saveSpendInsightsToReport } from '../api'
 import PartialMonthBanner from '../components/PartialMonthBanner'
 import { useCustomer } from '../context/CustomerContext'
-import type { ClassifierColor, CorrelationStatus, OpportunityPriority, SpendAnomaly, SpendInsightsResponse } from '../types'
+import type { ClassifierColor, CorrelationStatus, MarketplacePurchase, OpportunityPriority, SpendAnomaly, SpendInsightsResponse } from '../types'
 
 // Validated categorical palette (dataviz skill), consistent with Dashboard's cost widgets.
 const COVERED_COLOR = '#2a78d6'
@@ -12,6 +12,9 @@ const TRACK_COLOR = 'var(--border)'
 
 function fmtMoney(n: number) {
   return '$' + Math.abs(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+}
+function fmtWhole(n: number) {
+  return '$' + Math.abs(n).toLocaleString('en-US', { maximumFractionDigits: 0 })
 }
 function fmtMonthLabel(m: string) {
   const MONTH_ABBR = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
@@ -251,6 +254,154 @@ function BurnSummaryCard({ insights }: { insights: SpendInsightsResponse }) {
   )
 }
 
+function MarketplaceCard({
+  purchase, editing, draft, saving, onStartEdit, onDraftChange, onSave, onCancel,
+}: {
+  purchase: MarketplacePurchase
+  editing: boolean
+  draft: string
+  saving: boolean
+  onStartEdit: () => void
+  onDraftChange: (v: string) => void
+  onSave: () => void
+  onCancel: () => void
+}) {
+  return (
+    <div style={{
+      padding: '14px 16px', background: 'var(--surface)', border: '1px solid var(--border)',
+      borderRadius: 8, display: 'flex', flexDirection: 'column', gap: 10,
+    }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
+        <div style={{ fontWeight: 700, fontSize: 14 }}>{fmtMonthLabel(purchase.month)}</div>
+        <div style={{ fontSize: 16, fontWeight: 700 }}>{fmtWhole(purchase.amount)}</div>
+      </div>
+      {editing ? (
+        <div style={{ display: 'flex', gap: 8 }}>
+          <input
+            autoFocus
+            type="text"
+            value={draft}
+            placeholder="e.g. Okta renewal"
+            onChange={e => onDraftChange(e.target.value)}
+            onKeyDown={e => {
+              if (e.key === 'Enter') onSave()
+              if (e.key === 'Escape') onCancel()
+            }}
+            style={{ flex: 1, fontSize: 13, padding: '6px 10px' }}
+          />
+          <button className="btn btn-primary" onClick={onSave} disabled={saving} style={{ fontSize: 12, padding: '4px 10px' }}>
+            {saving ? <span className="spinner" /> : 'Save'}
+          </button>
+          <button className="btn btn-ghost" onClick={onCancel} style={{ fontSize: 12, padding: '4px 10px' }}>
+            Cancel
+          </button>
+        </div>
+      ) : purchase.hasNote ? (
+        <button
+          onClick={onStartEdit}
+          style={{
+            display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8,
+            padding: '8px 10px', background: 'var(--bg)', border: '1px solid var(--border)',
+            borderRadius: 6, fontSize: 13, cursor: 'pointer', textAlign: 'left', color: 'var(--text)',
+          }}
+        >
+          <span>{purchase.vendorNote}</span>
+          <span className="badge badge-green" style={{ flexShrink: 0 }}>✓ Noted</span>
+        </button>
+      ) : (
+        <button
+          onClick={onStartEdit}
+          style={{
+            display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8,
+            padding: '8px 10px', background: 'var(--bg)', border: '1px dashed var(--border)',
+            borderRadius: 6, fontSize: 13, cursor: 'pointer', textAlign: 'left', color: 'var(--muted)',
+          }}
+        >
+          <span>Add vendor note…</span>
+          <span className="badge badge-blue" style={{ flexShrink: 0 }}>+ Add Note</span>
+        </button>
+      )}
+    </div>
+  )
+}
+
+function MarketplaceSection({ customerId }: { customerId: string }) {
+  const [purchases, setPurchases] = useState<MarketplacePurchase[] | null>(null)
+  const [error, setError] = useState('')
+  const [editingMonth, setEditingMonth] = useState<string | null>(null)
+  const [draft, setDraft] = useState('')
+  const [saving, setSaving] = useState(false)
+
+  useEffect(() => {
+    if (!customerId) { setPurchases(null); return }
+    fetchMarketplacePurchases(customerId)
+      .then(setPurchases)
+      .catch(e => setError(e instanceof Error ? e.message : String(e)))
+  }, [customerId])
+
+  if (error) return null
+  if (purchases !== null && purchases.length === 0) return null
+
+  function startEdit(p: MarketplacePurchase) {
+    setEditingMonth(p.month)
+    setDraft(p.vendorNote ?? '')
+  }
+
+  async function save(month: string) {
+    if (!draft.trim()) return
+    setSaving(true)
+    try {
+      const updated = await patchMarketplacePurchaseNote(customerId, month, draft.trim())
+      setPurchases(prev => prev ? prev.map(p => p.month === month ? updated : p) : prev)
+      setEditingMonth(null)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const total = (purchases ?? []).reduce((sum, p) => sum + p.amount, 0)
+  const count = (purchases ?? []).length
+
+  return (
+    <>
+      <h2 style={{ fontSize: 13, fontWeight: 700, letterSpacing: '.5px', textTransform: 'uppercase', color: 'var(--muted)', margin: '4px 0 12px' }}>
+        Software Licensing
+      </h2>
+      <div className="card">
+        <div className="card-title">AWS Marketplace Purchases</div>
+        {purchases === null ? (
+          <p style={{ color: 'var(--muted)', fontSize: 13 }}>Loading…</p>
+        ) : (
+          <>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+              {purchases.map(p => (
+                <MarketplaceCard
+                  key={p.month}
+                  purchase={p}
+                  editing={editingMonth === p.month}
+                  draft={draft}
+                  saving={saving}
+                  onStartEdit={() => startEdit(p)}
+                  onDraftChange={setDraft}
+                  onSave={() => save(p.month)}
+                  onCancel={() => setEditingMonth(null)}
+                />
+              ))}
+            </div>
+            <div style={{ marginTop: 14, fontSize: 12, color: 'var(--muted)' }}>
+              {count} purchase{count !== 1 ? 's' : ''} · {fmtWhole(total)} total (last 12 months)
+              <br />
+              Excluded from infrastructure trend and MoM calculations
+            </div>
+          </>
+        )}
+      </div>
+    </>
+  )
+}
+
 export default function SpendInsights() {
   const today = now()
   const { selectedCustomer } = useCustomer()
@@ -380,7 +531,15 @@ export default function SpendInsights() {
                 ))}
               </div>
             )}
+            {insights.isPartial && (
+              <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 10 }}>
+                SP true-up pending — shown at month close.
+              </div>
+            )}
           </div>
+
+          {/* ── SOFTWARE LICENSING: AWS Marketplace Purchases ─────────────── */}
+          <MarketplaceSection customerId={customerId} />
 
           {/* ── SECTION 2: Commitment Utilization (large-commitment customers) ── */}
           {cu && cu.utilizationPct !== null && (

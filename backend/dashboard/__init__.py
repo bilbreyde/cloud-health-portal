@@ -280,23 +280,43 @@ def _handle_get(customer_id: str, force: bool) -> func.HttpResponse:
 
     if cost_summary and cost_summary['monthlyTotals']:
         totals = cost_summary['monthlyTotals']
-        curr_cost = totals[-1]['directCharges']
-        last_cost = totals[-2]['directCharges'] if len(totals) >= 2 else 0.0
-        mom_change = curr_cost - last_cost
+        curr_month = totals[-1]
+        prev_month = totals[-2] if len(totals) >= 2 else None
+        # Infrastructure spend only — Marketplace/one-time charges never enter this
+        # MoM comparison, and the prior month must be complete (rules 7/8).
+        curr_cost = curr_month.get('infrastructureSpend', curr_month.get('directCharges', 0.0))
+        mom_line = 'MoM change: n/a (no complete prior month to compare)'
+        if prev_month and not prev_month.get('isPartial', False):
+            last_cost = prev_month.get('infrastructureSpend', prev_month.get('directCharges', 0.0))
+            mom_change = curr_cost - last_cost
+            mom_line = f"MoM change (infrastructure spend): {'+' if mom_change >= 0 else ''}${mom_change:,.2f}"
         coverage_pct = cost_summary['savingsPlanCoverage']['coveragePct']
         top_svc_str = ', '.join(
             f"{s['service']} (${s['currentMonth']:,.2f})" for s in cost_summary['topServices'][:5]
         )
         lines.append(f"""
 Total AWS spend context (this is actual billing, separate from optimization signal):
-Current month spend: ${curr_cost:,.2f}
-Last month spend: ${last_cost:,.2f}
-MoM change: {'+' if mom_change >= 0 else ''}${mom_change:,.2f}
+Current month infrastructure spend: ${curr_cost:,.2f}
+{mom_line}
 Savings Plan coverage: {coverage_pct}%
 Top cost drivers: {top_svc_str}
 
 Note: The CloudHealth savings signal (${total_signal:,.2f}) represents optimization opportunity
 within this total spend. Keep these two metrics clearly distinct in the narrative.""")
+
+        marketplace_events = [
+            (m['month'], p) for m in totals for p in m.get('marketplacePurchases', [])
+        ]
+        if marketplace_events:
+            event_lines = '\n'.join(
+                f"{m}: {p.get('vendorNote') or 'Unidentified purchase'} — ${p['amount']:,.0f}"
+                for m, p in marketplace_events
+            )
+            lines.append(f"""
+Software licensing events (excluded from infrastructure trend):
+{event_lines}
+These are one-time AWS Marketplace purchases, not recurring infrastructure.
+Reference them by vendor name when they appear in the reporting period.""")
 
     lines.append("""
 Generate a concise executive dashboard narrative. Return a JSON object with exactly these four string keys:

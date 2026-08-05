@@ -300,40 +300,61 @@ def project_amount(actual: float, service_name: str, completion_ratio: float) ->
     return actual / completion_ratio, True
 
 
-def compute_edp_utilization(services_data: list, monthly_obligation: float) -> dict:
+def compute_edp_utilization(services_data: list, monthly_obligation: float, is_partial: bool = False) -> dict:
     """
-    Compute EDP utilization excluding one-time and credit charges.
+    Compute EDP utilization using infrastructure spend only (classify_charge_bucket) —
+    Marketplace, Enterprise Support, AWS Config/CloudTrail, Certificate Manager, and
+    billing adjustments (Partner Pricing Adjustment, refunds/credits) never count toward
+    the commitment. SP true-up lines (Savings Plan/RI true-up) are billing-lag-distorted
+    mid-month, so they're folded into infrastructure spend only when the month is
+    complete (is_partial=False); on a partial month they're excluded entirely and
+    surfaced as a "pending" excluded-service line instead.
     services_data: [{service, amount, projected_amount}]
     """
-    recurring_total = 0.0
+    infrastructure_total = 0.0
     one_time_total = 0.0
     credit_total = 0.0
     excluded_services = []
 
     for svc in services_data:
-        classification = classify_service(svc['service'])
+        bucket = classify_charge_bucket(svc['service'])
         amount = svc.get('projected_amount', svc['amount'])
-        if classification['pattern'] == 'credit':
+
+        if bucket == 'sp_true_up':
+            if is_partial:
+                excluded_services.append({
+                    'service': svc['service'],
+                    'amount': amount,
+                    'reason': 'SP true-up pending — shown at month close',
+                })
+            else:
+                infrastructure_total += amount
+        elif bucket == 'billing_adjustment':
             credit_total += abs(amount)
-        elif classification['exclude_from_edp']:
+            excluded_services.append({
+                'service': svc['service'],
+                'amount': amount,
+                'reason': 'Billing adjustment',
+            })
+        elif bucket == 'one_time':
             one_time_total += amount
             excluded_services.append({
                 'service': svc['service'],
                 'amount': amount,
-                'reason': classification['flag_type'],
+                'reason': classify_service(svc['service']).get('flag_type', 'One-Time / Flat Fee'),
             })
         else:
-            recurring_total += amount
+            infrastructure_total += amount
 
     utilization_pct = (
-        recurring_total / monthly_obligation * 100 if monthly_obligation > 0 else 0
+        infrastructure_total / monthly_obligation * 100 if monthly_obligation > 0 else 0
     )
 
     return {
-        'recurring_spend': recurring_total,
+        'recurring_spend': infrastructure_total,
         'one_time_charges': one_time_total,
         'credits': credit_total,
-        'net_recurring': recurring_total - credit_total,
+        'net_recurring': infrastructure_total - credit_total,
         'monthly_obligation': monthly_obligation,
         'utilization_pct': utilization_pct,
         'on_track': 85 <= utilization_pct <= 115,
@@ -357,3 +378,58 @@ def priority_rank(priority: str) -> int:
 
 def optional_matched_rule(service_name: str) -> Optional[str]:
     return classify_service(service_name).get('matched_rule')
+
+
+# ── charge-bucket classification (cost_history GET / dashboard / EDP) ─────────
+#
+# A second, coarser classification used specifically for the four cost_history
+# reporting buckets: infrastructure (trending + EDP), one_time (shown separately,
+# never trended or projected), billing_adjustment (footnote only), and sp_true_up
+# (Savings Plan / RI true-up lines that are billing-lag-distorted mid-month and
+# must be suppressed on partial months). This is deliberately a separate function
+# from classify_service — the two disagree on a few services on purpose (e.g. AWS
+# Partner Pricing Adjustment is "one_time" for anomaly detection but
+# "billing_adjustment" here; Savings Plan - Unused is "one_time" for anomalies but
+# "sp_true_up" here) because the bucket a service belongs to for cost_history
+# trending isn't always the same bucket it belongs to for anomaly flagging.
+
+CHARGE_BUCKET_ONE_TIME = [
+    'Amazon Marketplace',
+    'AWS Marketplace',
+    'Enterprise Support',
+    'AWS Config',
+    'AWS CloudTrail',
+    'Certificate Manager',
+]
+
+_SP_TRUE_UP_KEYWORDS = ['negation', 'ri credit', 'ri volume discount', 'reserved instance']
+_SP_TRUE_UP_NAMES = [
+    'savings plan - unused',
+    'database savings plan - unused',
+    'compute savings plan - unused',
+]
+
+_BILLING_ADJUSTMENT_NAMES = ['aws partner pricing adjustment']
+_BILLING_ADJUSTMENT_KEYWORDS = ['refund', 'credit']
+
+
+def classify_charge_bucket(service_name: str) -> str:
+    """Returns one of: 'infrastructure' | 'one_time' | 'billing_adjustment' | 'sp_true_up'."""
+    service_lower = service_name.lower()
+
+    # SP true-up checked first — "Negation Credit(s)" would otherwise match the
+    # generic "credit" billing-adjustment keyword below.
+    if any(name in service_lower for name in _SP_TRUE_UP_NAMES):
+        return 'sp_true_up'
+    if any(k in service_lower for k in _SP_TRUE_UP_KEYWORDS):
+        return 'sp_true_up'
+
+    if _matches_any(service_lower, CHARGE_BUCKET_ONE_TIME):
+        return 'one_time'
+
+    if any(name in service_lower for name in _BILLING_ADJUSTMENT_NAMES):
+        return 'billing_adjustment'
+    if any(k in service_lower for k in _BILLING_ADJUSTMENT_KEYWORDS):
+        return 'billing_adjustment'
+
+    return 'infrastructure'

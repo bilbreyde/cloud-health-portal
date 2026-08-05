@@ -6,8 +6,8 @@ from typing import Optional
 
 from azure.cosmos import CosmosClient, PartitionKey, exceptions
 
-from .models import CostHistoryRecord, Customer, ExceptionRecord, Report, Template, TrendData, Upload
-from .cost_classifier import classify_service
+from .models import CostHistoryRecord, Customer, ExceptionRecord, MarketplacePurchase, Report, Template, TrendData, Upload
+from .cost_classifier import classify_charge_bucket, classify_service
 from .cost_classifier import project_amount as classify_project_amount
 from .spend_insights_engine import is_partial_month, project_amount
 
@@ -26,6 +26,7 @@ _CONTAINERS = {
     "templates": "/customerId",
     "exceptions": "/customerId",
     "cost_history": "/customerId",
+    "marketplace_purchases": "/customerId",
 }
 
 # customers container is special — the customer IS the partition, so we store
@@ -530,6 +531,15 @@ def get_cost_history_summary(customer_id: str, months: list) -> dict:
     savings_plan_by_month: dict[str, float] = {m: 0.0 for m in months_sorted}
     by_service_month: dict[str, dict[str, float]] = {}
 
+    # Charge-bucket totals (infrastructure / one_time / billing_adjustment / sp_true_up)
+    # per shared.cost_classifier.classify_charge_bucket — drives infrastructureSpend,
+    # oneTimeCharges, billingAdjustments, spTrueUp, totalBilled and netBilled below.
+    bucket_by_month: dict[str, dict[str, float]] = {
+        m: {'infrastructure': 0.0, 'one_time': 0.0, 'billing_adjustment': 0.0, 'sp_true_up': 0.0}
+        for m in months_sorted
+    }
+    gross_by_month: dict[str, float] = {m: 0.0 for m in months_sorted}  # sum of positive-amount lines only
+
     for r in records:
         normalized_service = re.sub(r'\s+', ' ', r.service.strip().lower())
         if r.chargeType == 'indirect':
@@ -542,6 +552,16 @@ def get_cost_history_summary(customer_id: str, months: list) -> dict:
                 ec2_compute_by_month[r.month] = ec2_compute_by_month.get(r.month, 0.0) + r.amount
         by_service_month.setdefault(r.service, {})
         by_service_month[r.service][r.month] = by_service_month[r.service].get(r.month, 0.0) + r.amount
+
+        bucket = classify_charge_bucket(r.service)
+        bucket_by_month[r.month][bucket] = bucket_by_month[r.month].get(bucket, 0.0) + r.amount
+        if r.amount > 0:
+            gross_by_month[r.month] = gross_by_month.get(r.month, 0.0) + r.amount
+
+    marketplace_notes_by_month = {p.month: p.vendorNote for p in list_marketplace_purchases(customer_id)}
+    marketplace_amount_by_month = next(
+        (mv for s, mv in by_service_month.items() if s.strip().lower() == 'amazon marketplace'), {},
+    )
 
     # ── partial-month detection ────────────────────────────────────────────────
     # The most recent month can be a real, still-in-progress calendar month with
@@ -560,6 +580,25 @@ def get_cost_history_summary(customer_id: str, months: list) -> dict:
         net = round(direct + indirect, 2)
         m_is_partial = is_partial and m == current_month
         ratio = completion_ratio if m_is_partial else 1.0
+
+        # sp_true_up (Savings Plan/RI true-up lines) is billing-lag-distorted mid-month
+        # (rules 4/5) — fold into infrastructureSpend only once the month has closed,
+        # and report the field itself as 0 while partial rather than the noisy raw value.
+        buckets = bucket_by_month.get(m, {})
+        sp_true_up_raw = round(buckets.get('sp_true_up', 0.0), 2)
+        sp_true_up = 0.0 if m_is_partial else sp_true_up_raw
+        infrastructure_spend = round(buckets.get('infrastructure', 0.0) + sp_true_up, 2)
+        one_time_charges = round(buckets.get('one_time', 0.0), 2)
+        billing_adjustments = round(buckets.get('billing_adjustment', 0.0), 2)
+        total_billed = round(gross_by_month.get(m, 0.0), 2)   # gross: positive-amount lines only
+        net_billed = net                                       # net: everything summed, credits already netted in
+
+        marketplace_amount = marketplace_amount_by_month.get(m, 0.0)
+        marketplace_purchases = (
+            [{'amount': round(marketplace_amount, 2), 'vendorNote': marketplace_notes_by_month.get(m)}]
+            if marketplace_amount > 0 else []
+        )
+
         monthly_totals.append({
             'month': m,
             'directCharges': direct,
@@ -569,6 +608,15 @@ def get_cost_history_summary(customer_id: str, months: list) -> dict:
             'completionRatio': round(ratio, 4),
             'projectedDirectCharges': round(project_amount(direct, ratio), 2) if m_is_partial else direct,
             'projectedNetCost': round(project_amount(net, ratio), 2) if m_is_partial else net,
+            'infrastructureSpend': infrastructure_spend,
+            'projectedInfrastructureSpend': round(project_amount(infrastructure_spend, ratio), 2)
+                if m_is_partial else infrastructure_spend,
+            'oneTimeCharges': one_time_charges,
+            'billingAdjustments': billing_adjustments,
+            'spTrueUp': sp_true_up,
+            'totalBilled': total_billed,
+            'netBilled': net_billed,
+            'marketplacePurchases': marketplace_purchases,
         })
 
     # ── by-service breakdown + trend ───────────────────────────────────────────
@@ -660,3 +708,62 @@ def get_cost_history_summary(customer_id: str, months: list) -> dict:
         'isPartial': is_partial,
         'completionRatio': round(completion_ratio, 4),
     }
+
+
+# ── marketplace_purchases ────────────────────────────────────────────────────
+
+def _marketplace_purchase_id(customer_id: str, month: str) -> str:
+    # Deterministic — at most one purchase record per (customer, month), matching
+    # "Amazon Marketplace" being a single summed line per month in cost_history.
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, f'marketplace-purchase:{customer_id}:{month}'))
+
+
+def upsert_marketplace_purchase_amount(customer_id: str, month: str, amount: float) -> MarketplacePurchase:
+    """Called from CostHistory import: create the record with vendorNote=None if it
+    doesn't exist yet, or update the amount while preserving any existing vendorNote."""
+    container = _get_container('marketplace_purchases')
+    doc_id = _marketplace_purchase_id(customer_id, month)
+    now = datetime.now(timezone.utc)
+    try:
+        existing = container.read_item(item=doc_id, partition_key=customer_id)
+        record = MarketplacePurchase.from_dict(existing)
+        record.amount = amount
+        record.updatedAt = now
+    except exceptions.CosmosResourceNotFoundError:
+        record = MarketplacePurchase(
+            id=doc_id, customerId=customer_id, month=month, amount=amount,
+            vendorNote=None, importedAt=now, updatedAt=now,
+        )
+    container.upsert_item(record.to_dict())
+    return record
+
+
+def list_marketplace_purchases(customer_id: str) -> list[MarketplacePurchase]:
+    container = _get_container('marketplace_purchases')
+    items = container.query_items(
+        query='SELECT * FROM c WHERE c.customerId = @customerId',
+        parameters=[{'name': '@customerId', 'value': customer_id}],
+        partition_key=customer_id,
+    )
+    results = [MarketplacePurchase.from_dict(i) for i in items]
+    return sorted(results, key=lambda r: r.month, reverse=True)
+
+
+def get_marketplace_purchase(customer_id: str, month: str) -> Optional[MarketplacePurchase]:
+    container = _get_container('marketplace_purchases')
+    doc_id = _marketplace_purchase_id(customer_id, month)
+    try:
+        return MarketplacePurchase.from_dict(container.read_item(item=doc_id, partition_key=customer_id))
+    except exceptions.CosmosResourceNotFoundError:
+        return None
+
+
+def update_marketplace_purchase_note(customer_id: str, month: str, vendor_note: str) -> Optional[MarketplacePurchase]:
+    record = get_marketplace_purchase(customer_id, month)
+    if record is None:
+        return None
+    record.vendorNote = vendor_note
+    record.updatedAt = datetime.now(timezone.utc)
+    container = _get_container('marketplace_purchases')
+    container.upsert_item(record.to_dict())
+    return record
