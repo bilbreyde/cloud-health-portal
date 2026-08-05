@@ -340,29 +340,32 @@ export interface SpendOpportunity {
   action: string
 }
 
-export interface ExcludedService {
-  service: string
-  amount: number
-  reason: string
-}
+export type EdpStatus = 'at_risk' | 'watch' | 'on_track' | 'over_committed'
 
 export interface SpendCommitmentUtilization {
   commitmentType: CommitmentType | null
   monthlyObligation: number
   actualSpend: number
-  projectedSpend: number
   isPartial: boolean
   completionRatio: number
-  recurringSpend: number
-  oneTimeCharges: number
-  credits: number
-  netBilled: number
-  excludedServices: ExcludedService[]
+  // All billed spend minus AWS-applied credits counts toward the EDP — Marketplace,
+  // Enterprise Support, and other one-time/flat fees are NOT excluded; only genuine
+  // AWS credits/negations are.
+  netTowardEdp: number
+  infrastructureSpend: number
+  marketplaceSpend: number
+  oneTimeSpend: number
+  creditsApplied: number
+  suppressedPartialMonth: number
   utilizationPct: number | null
+  status: EdpStatus
+  statusLabel: string
+  statusColor: ClassifierColor
   onTrack: boolean
   overUnderAmount: number | null
   trailing3MoAvg: number | null
   underUtilizationRisk: boolean
+  overCommitted: boolean
   monthsRemaining: number | null
   expiryWarning: boolean
   commitmentEndDate: string | null

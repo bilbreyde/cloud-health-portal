@@ -4,7 +4,7 @@ import { Cell, Pie, PieChart, ResponsiveContainer } from 'recharts'
 import { fetchMarketplacePurchases, fetchSpendInsights, patchMarketplacePurchaseNote, saveSpendInsightsToReport } from '../api'
 import PartialMonthBanner from '../components/PartialMonthBanner'
 import { useCustomer } from '../context/CustomerContext'
-import type { ClassifierColor, CorrelationStatus, MarketplacePurchase, OpportunityPriority, SpendAnomaly, SpendInsightsResponse } from '../types'
+import type { ClassifierColor, CorrelationStatus, EdpStatus, MarketplacePurchase, OpportunityPriority, SpendAnomaly, SpendInsightsResponse } from '../types'
 
 // Validated categorical palette (dataviz skill), consistent with Dashboard's cost widgets.
 const COVERED_COLOR = '#2a78d6'
@@ -70,9 +70,9 @@ const TREND_ARROW: Record<string, string> = { up: '▲', down: '▼', flat: '—
 
 // Mirrors shared.cost_classifier.should_suppress_for_partial_month — SP/RI true-up
 // lines are billing-lag artifacts that resolve at month-end true-up. The backend
-// already omits these from anomalies/opportunities/excludedServices on a partial
-// month; this is a defensive client-side guard against the same patterns in case
-// stale/cached data slips through.
+// already omits these from anomalies/opportunities on a partial month; this is a
+// defensive client-side guard against the same patterns in case stale/cached data
+// slips through.
 const SUPPRESS_FOR_PARTIAL_PATTERNS = [
   'savings plan - unused',
   'database savings plan - unused',
@@ -134,6 +134,14 @@ function utilizationColor(pct: number): string {
   return 'var(--red)'
 }
 
+// EDP is a spend commitment — over-committed still reads as healthy (green), not a warning.
+const EDP_STATUS_BADGE_CLS: Record<EdpStatus, string> = {
+  at_risk: 'badge-red',
+  watch: 'badge-yellow',
+  on_track: 'badge-green',
+  over_committed: 'badge-green',
+}
+
 function CommitmentGauge({ utilizationPct }: { utilizationPct: number }) {
   const color = utilizationColor(utilizationPct)
   const filled = Math.min(100, Math.max(0, utilizationPct))
@@ -164,7 +172,7 @@ function CommitmentGauge({ utilizationPct }: { utilizationPct: number }) {
         alignItems: 'center', justifyContent: 'center', pointerEvents: 'none',
       }}>
         <div style={{ fontSize: 30, fontWeight: 700, color }}>{utilizationPct.toFixed(1)}%</div>
-        <div style={{ fontSize: 11, color: 'var(--muted)' }}>recurring spend vs. obligation</div>
+        <div style={{ fontSize: 11, color: 'var(--muted)' }}>net spend vs. EDP obligation</div>
       </div>
     </div>
   )
@@ -230,10 +238,12 @@ function OpportunityCard({
 function BurnSummaryCard({ insights }: { insights: SpendInsightsResponse }) {
   const cu = insights.commitmentUtilization
   if (!cu) return null
-  const statusOnTrack = cu.onTrack
   return (
     <div className="card">
       <div className="card-title">Monthly Burn Summary</div>
+      <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: -8, marginBottom: 10 }}>
+        EDP is a spend commitment — all billed spend counts, only AWS-applied credits are excluded.
+      </div>
       <div className="table-wrap">
         <table>
           <tbody>
@@ -242,9 +252,9 @@ function BurnSummaryCard({ insights }: { insights: SpendInsightsResponse }) {
               <td>{fmtMoney(cu.monthlyObligation)}</td>
             </tr>
             <tr>
-              <td style={{ fontWeight: 600 }}>Recurring Spend {cu.isPartial ? '(proj.)' : ''}</td>
+              <td style={{ fontWeight: 600 }}>Net Spend Toward EDP {cu.isPartial ? '(proj.)' : ''}</td>
               <td>
-                {fmtMoney(cu.recurringSpend)}{' '}
+                {fmtMoney(cu.netTowardEdp)}{' '}
                 {cu.utilizationPct !== null && (
                   <span style={{ color: utilizationColor(cu.utilizationPct), fontWeight: 700 }}>
                     {cu.utilizationPct.toFixed(1)}%
@@ -253,23 +263,25 @@ function BurnSummaryCard({ insights }: { insights: SpendInsightsResponse }) {
               </td>
             </tr>
             <tr>
-              <td style={{ fontWeight: 600 }}>One-Time Charges</td>
-              <td>{fmtMoney(cu.oneTimeCharges)}</td>
+              <td style={{ paddingLeft: 20, color: 'var(--muted)' }}>Infrastructure</td>
+              <td>{fmtMoney(cu.infrastructureSpend)}</td>
             </tr>
             <tr>
-              <td style={{ fontWeight: 600 }}>Credits</td>
-              <td style={{ color: 'var(--green)' }}>−{fmtMoney(cu.credits)}</td>
+              <td style={{ paddingLeft: 20, color: 'var(--muted)' }}>Marketplace</td>
+              <td>{fmtMoney(cu.marketplaceSpend)}</td>
             </tr>
             <tr>
-              <td style={{ fontWeight: 600 }}>Net Billed {cu.isPartial ? '(proj.)' : ''}</td>
-              <td style={{ fontWeight: 700 }}>{fmtMoney(cu.netBilled)}</td>
+              <td style={{ paddingLeft: 20, color: 'var(--muted)' }}>Other One-Time / Flat Fee</td>
+              <td>{fmtMoney(cu.oneTimeSpend)}</td>
+            </tr>
+            <tr>
+              <td style={{ fontWeight: 600 }}>AWS Credits/Negations Applied</td>
+              <td style={{ color: 'var(--green)' }}>−{fmtMoney(cu.creditsApplied)}</td>
             </tr>
             <tr>
               <td style={{ fontWeight: 600 }}>Status</td>
               <td>
-                <span className={statusOnTrack ? 'badge badge-green' : 'badge badge-red'}>
-                  {statusOnTrack ? 'ON TRACK' : 'AT RISK'}
-                </span>
+                <span className={`badge ${EDP_STATUS_BADGE_CLS[cu.status]}`}>{cu.statusLabel.toUpperCase()}</span>
               </td>
             </tr>
           </tbody>
@@ -496,9 +508,6 @@ export default function SpendInsights() {
     o => !(currentMonthIsPartial && o.category.toLowerCase() === 'savings plan'
       && o.service.toLowerCase().includes('unused')),
   )
-  const excludedServices = (cu?.excludedServices ?? []).filter(
-    e => !(currentMonthIsPartial && shouldSuppressForPartialMonth(e.service)),
-  )
 
   return (
     <main className="page">
@@ -519,8 +528,7 @@ export default function SpendInsights() {
           month={insights.month}
           completionRatio={insights.completionRatio}
           oneTimeCharges={
-            excludedServices.length > 0 ? excludedServices.map(e => ({ service: e.service, amount: e.amount }))
-            : anomalies.filter(a => a.pattern === 'one_time').map(a => ({ service: a.service, amount: a.currentAmount }))
+            anomalies.filter(a => a.pattern === 'one_time').map(a => ({ service: a.service, amount: a.currentAmount }))
           }
         />
       )}
@@ -588,50 +596,49 @@ export default function SpendInsights() {
                   <CommitmentGauge utilizationPct={cu.utilizationPct} />
                 </div>
                 <div style={{ flex: '2 1 320px' }}>
+                  <div style={{
+                    padding: '10px 12px', background: 'var(--bg)', borderRadius: 6,
+                    border: '1px solid var(--border)', marginBottom: 12, fontSize: 12, lineHeight: 1.6,
+                  }}>
+                    An EDP is a spend commitment — all billed spend counts toward it, including Marketplace and
+                    other one-time/flat fees. Only AWS-applied credits and negations are excluded.
+                  </div>
+
                   <div style={{ display: 'flex', gap: 20, marginBottom: 12, flexWrap: 'wrap' }}>
                     <div>
-                      <div style={{ fontSize: 10, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '.5px' }}>Recurring Spend</div>
-                      <div style={{ fontSize: 16, fontWeight: 700 }}>{fmtMoney(cu.recurringSpend)}</div>
+                      <div style={{ fontSize: 10, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '.5px' }}>Net Toward EDP</div>
+                      <div style={{ fontSize: 16, fontWeight: 700 }}>{fmtMoney(cu.netTowardEdp)}</div>
                       <div style={{ fontSize: 10, color: 'var(--muted)' }}>{cu.utilizationPct.toFixed(1)}% of obligation</div>
                     </div>
                     <div>
-                      <div style={{ fontSize: 10, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '.5px' }}>One-Time Charges</div>
-                      <div style={{ fontSize: 16, fontWeight: 700 }}>{fmtMoney(cu.oneTimeCharges)}</div>
-                      <div style={{ fontSize: 10, color: 'var(--muted)' }}>excluded from utilization</div>
+                      <div style={{ fontSize: 10, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '.5px' }}>Infrastructure</div>
+                      <div style={{ fontSize: 16, fontWeight: 700 }}>{fmtMoney(cu.infrastructureSpend)}</div>
+                    </div>
+                    <div>
+                      <div style={{ fontSize: 10, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '.5px' }}>Marketplace</div>
+                      <div style={{ fontSize: 16, fontWeight: 700 }}>{fmtMoney(cu.marketplaceSpend)}</div>
+                    </div>
+                    <div>
+                      <div style={{ fontSize: 10, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '.5px' }}>Other One-Time</div>
+                      <div style={{ fontSize: 16, fontWeight: 700 }}>{fmtMoney(cu.oneTimeSpend)}</div>
                     </div>
                     <div>
                       <div style={{ fontSize: 10, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '.5px' }}>Credits Applied</div>
-                      <div style={{ fontSize: 16, fontWeight: 700, color: 'var(--green)' }}>−{fmtMoney(cu.credits)}</div>
-                    </div>
-                    <div>
-                      <div style={{ fontSize: 10, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '.5px' }}>Net Billed</div>
-                      <div style={{ fontSize: 16, fontWeight: 700 }}>{fmtMoney(cu.netBilled)}</div>
+                      <div style={{ fontSize: 16, fontWeight: 700, color: 'var(--green)' }}>−{fmtMoney(cu.creditsApplied)}</div>
+                      <div style={{ fontSize: 10, color: 'var(--muted)' }}>excluded from utilization</div>
                     </div>
                   </div>
-
-                  {excludedServices.length > 0 && (
-                    <div style={{
-                      padding: '10px 12px', background: 'var(--bg)', borderRadius: 6,
-                      border: '1px solid var(--border)', marginBottom: 12, fontSize: 12,
-                    }}>
-                      <div style={{ fontWeight: 700, marginBottom: 4 }}>Excluded one-time charges</div>
-                      {excludedServices.map(e => (
-                        <div key={e.service} style={{ display: 'flex', justifyContent: 'space-between', padding: '2px 0' }}>
-                          <span>{e.service} <span style={{ color: 'var(--muted)' }}>({e.reason})</span></span>
-                          <span style={{ fontWeight: 600 }}>{fmtMoney(e.amount)}</span>
-                        </div>
-                      ))}
-                    </div>
-                  )}
 
                   {cu.trailing3MoAvg !== null && (
                     <div style={{
                       padding: '12px 14px', background: 'var(--bg)', borderRadius: 6,
                       border: '1px solid var(--border)', marginBottom: 12, fontSize: 13, lineHeight: 1.6,
                     }}>
-                      3-month trailing avg (recurring): <strong>{fmtMoney(cu.trailing3MoAvg)}</strong> —{' '}
-                      <span style={{ color: cu.underUtilizationRisk ? 'var(--red)' : 'var(--green)', fontWeight: 700 }}>
-                        {cu.underUtilizationRisk ? 'At Risk for renewal' : 'On Track'}
+                      3-month trailing avg (net toward EDP): <strong>{fmtMoney(cu.trailing3MoAvg)}</strong> —{' '}
+                      <span style={{
+                        color: cu.underUtilizationRisk ? 'var(--red)' : 'var(--green)', fontWeight: 700,
+                      }}>
+                        {cu.underUtilizationRisk ? 'At Risk for renewal' : cu.overCommitted ? 'Over-Committed — Strong Renewal Position' : 'On Track'}
                       </span>
                     </div>
                   )}
@@ -658,9 +665,10 @@ export default function SpendInsights() {
                     {cu.commitmentType} commitment{cu.discountRate ? ` · ~${(cu.discountRate * 100).toFixed(0)}% discount vs. on-demand` : ''}
                   </div>
 
-                  {currentMonthIsPartial && (
+                  {currentMonthIsPartial && cu.suppressedPartialMonth > 0 && (
                     <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 10 }}>
-                      Savings Plan true-up charges and credits are excluded from partial-month analysis — they appear at month close.
+                      Savings Plan true-up charges and credits ({fmtMoney(cu.suppressedPartialMonth)}) are excluded
+                      from partial-month analysis — they appear at month close.
                     </div>
                   )}
                 </div>

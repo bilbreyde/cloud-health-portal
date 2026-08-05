@@ -9,7 +9,7 @@ import statistics
 from datetime import date
 from typing import Optional
 
-from .cost_classifier import classify_charge_bucket, classify_service, compute_edp_utilization
+from .cost_classifier import classify_service, compute_edp_utilization
 from .cost_classifier import priority_rank as classifier_priority_rank
 from .cost_classifier import project_amount as classify_project_amount
 
@@ -351,7 +351,20 @@ def _svc_val(by_service: list, name: str, month: str) -> float:
     return svc['months'].get(month, 0.0) if svc else 0.0
 
 
-_EDP_RISK_RATIO = 0.85  # trailing 3-mo recurring avg below this fraction of obligation -> risk flag
+_EDP_RISK_RATIO = 0.85  # trailing 3-mo net-toward-EDP avg below this fraction of obligation -> risk flag
+_EDP_OVER_COMMITTED_RATIO = 1.10  # trailing 3-mo avg above this fraction -> informational, not a risk
+
+
+def _net_toward_edp_for_month(by_service: list, month: str, monthly_obligation: float) -> float:
+    """All AWS-billed spend for `month` minus AWS-applied credits (compute_edp_utilization) —
+    Marketplace/Enterprise Support/etc. all count, only genuine credits/negations are excluded.
+    Always called for a COMPLETE month, so no partial-month suppression or projection applies."""
+    services_data = [
+        {'service': s['service'], 'amount': s['months'][month], 'projected_amount': s['months'][month]}
+        for s in by_service if month in s.get('months', {})
+    ]
+    edp = compute_edp_utilization(services_data, monthly_obligation, is_partial=False)
+    return edp['net_toward_edp']
 
 
 def compute_opportunities(
@@ -475,35 +488,40 @@ def compute_opportunities(
             ),
         })
 
-    # EDP burn-rate risk — trailing 3-month INFRASTRUCTURE average vs. 85% of obligation.
-    # Only infrastructure-bucket services (+ SP true-up on complete months) enter the
-    # average, so a month dominated by a one-time charge (or lacking one) doesn't
-    # distort whether the commitment itself is being consumed.
+    # EDP burn-rate risk — trailing average of the last 3 COMPLETE months' NET SPEND
+    # TOWARD EDP (all billed spend minus AWS-applied credits — Marketplace and other
+    # one-time charges count). Only complete months enter the average since a partial
+    # month's figure isn't final; months with a large Marketplace purchase will
+    # naturally inflate this, which is correct — that dollar really was billed.
     if monthly_obligation and months_in_window:
-        trailing_months = months_in_window[-3:]
-        trailing_vals = []
-        for m in trailing_months:
-            m_is_partial = is_partial and m == current_month
-            month_infra = sum(
-                s['months'].get(m, 0.0) for s in by_service
-                if classify_charge_bucket(s['service']) == 'infrastructure'
-                or (classify_charge_bucket(s['service']) == 'sp_true_up' and not m_is_partial)
-            )
-            if m_is_partial:
-                month_infra = project_amount(month_infra, completion_ratio)
-            trailing_vals.append(month_infra)
-        trailing_avg = statistics.mean(trailing_vals) if trailing_vals else 0.0
-        threshold_85 = monthly_obligation * _EDP_RISK_RATIO
-        if trailing_avg < threshold_85:
-            opportunities.append({
-                'category': 'EDP Risk', 'service': 'EDP Under-Utilization Risk',
-                'currentCost': round(trailing_avg, 2), 'estimatedSavings': 0.0, 'priority': 'Critical',
-                'action': (
-                    f'Trailing 3-month infrastructure spend ({_fmt(trailing_avg)}) is below 85% of EDP obligation '
-                    f'({_fmt(threshold_85)}). Risk of unfavorable renewal terms. Identify workloads to migrate '
-                    f'to AWS to consume committed capacity.'
-                ),
-            })
+        complete_months = [m for m in months_in_window if not (is_partial and m == current_month)]
+        last_3_complete = complete_months[-3:]
+        if len(last_3_complete) >= 2:
+            trailing_vals = [_net_toward_edp_for_month(by_service, m, monthly_obligation) for m in last_3_complete]
+            trailing_avg = statistics.mean(trailing_vals)
+            utilization_trailing = trailing_avg / monthly_obligation * 100
+            threshold_85 = monthly_obligation * _EDP_RISK_RATIO
+            if utilization_trailing < 85:
+                opportunities.append({
+                    'category': 'EDP Risk', 'service': 'EDP Under-Utilization Risk',
+                    'currentCost': round(trailing_avg, 2), 'estimatedSavings': 0.0, 'priority': 'Critical',
+                    'action': (
+                        f'Trailing {len(last_3_complete)}-month average net spend ({_fmt(trailing_avg)}) is below '
+                        f'85% of EDP obligation ({_fmt(threshold_85)}). Risk of unfavorable renewal terms. '
+                        f'Identify workloads to migrate to AWS to consume committed capacity.'
+                    ),
+                })
+            elif utilization_trailing > _EDP_OVER_COMMITTED_RATIO * 100:
+                # Over-committed — informational only, not a savings opportunity or a risk.
+                opportunities.append({
+                    'category': 'EDP Status', 'service': 'EDP Over-Committed',
+                    'currentCost': round(trailing_avg, 2), 'estimatedSavings': 0.0, 'priority': 'Low',
+                    'action': (
+                        f'Trailing {len(last_3_complete)}-month average net spend ({_fmt(trailing_avg)}) is above '
+                        f'110% of EDP obligation ({_fmt(monthly_obligation)}) — strong renewal position, '
+                        f'no action needed.'
+                    ),
+                })
 
     opportunities.sort(key=lambda o: (classifier_priority_rank(o['priority']), -o['estimatedSavings']))
     return opportunities
@@ -534,11 +552,11 @@ def compute_commitment_utilization(
     """monthly_totals: cost_summary['monthlyTotals'] shape — [{month, netCost, ...}, ...].
     by_service: cost_summary['byService'] shape — [{service, months: {month: amount}}, ...].
 
-    Utilization compares the obligation against RECURRING spend only (shared.cost_classifier)
-    — a one-time software purchase (Amazon Marketplace) or a flat fee (Enterprise Support)
-    doesn't represent capacity consumed against the commitment, and including it made a
-    normal month look wildly over-utilized. actualSpend (all patterns, to-date) is kept
-    alongside for "what's billed so far" display; it never drives the utilization math.
+    An EDP is a SPEND commitment, not an infrastructure-only one: utilization compares
+    the obligation against ALL billed spend minus AWS-applied credits (shared.cost_classifier.
+    compute_edp_utilization) — Marketplace, Enterprise Support, Partner Pricing Adjustment,
+    AWS Config/CloudTrail, and SP Unused (once the month is complete) all count. Only genuine
+    AWS credits/negations (which reduce what's actually billed) are excluded.
     """
     monthly_obligation = commitment.get('commitmentMonthlyObligation')
     if not monthly_obligation:
@@ -560,28 +578,21 @@ def compute_commitment_utilization(
 
     edp = compute_edp_utilization(services_data, monthly_obligation, is_partial=is_partial)
     actual_spend_to_date = sum(s['amount'] for s in services_data)
-    net_billed = edp['recurring_spend'] + edp['one_time_charges'] - edp['credits']
 
-    # Trailing 3-month INFRASTRUCTURE average (not raw netCost) drives the burn-rate risk
-    # flag, matching the EDP Under-Utilization Risk opportunity's own threshold. SP
-    # true-up lines fold in only for months that are complete (rules 4/5).
-    trailing_months = months_in_window[-3:]
-    trailing_vals = []
-    for m in trailing_months:
-        m_is_partial = is_partial and m == current_month
-        month_infra = sum(
-            s['months'].get(m, 0.0) for s in by_service
-            if classify_charge_bucket(s['service']) == 'infrastructure'
-            or (classify_charge_bucket(s['service']) == 'sp_true_up' and not m_is_partial)
-        )
-        if m_is_partial:
-            month_infra = project_amount(month_infra, completion_ratio)
-        trailing_vals.append(month_infra)
-    trailing_3mo_avg = round(statistics.mean(trailing_vals), 2) if trailing_vals else None
-    under_utilization_risk = bool(
-        trailing_3mo_avg is not None and monthly_obligation
-        and trailing_3mo_avg < monthly_obligation * _EDP_RISK_RATIO
-    )
+    # Trailing average of the last 3 COMPLETE months' net spend toward EDP — same
+    # methodology as the "EDP Under-Utilization Risk" opportunity card, so the two
+    # never disagree. A partial current month is never one of the 3.
+    complete_months = [m for m in months_in_window if not (is_partial and m == current_month)]
+    last_3_complete = complete_months[-3:]
+    trailing_3mo_avg = None
+    under_utilization_risk = False
+    over_committed = False
+    if len(last_3_complete) >= 2 and monthly_obligation:
+        trailing_vals = [_net_toward_edp_for_month(by_service, m, monthly_obligation) for m in last_3_complete]
+        trailing_3mo_avg = round(statistics.mean(trailing_vals), 2)
+        trailing_utilization_pct = trailing_3mo_avg / monthly_obligation * 100
+        under_utilization_risk = trailing_utilization_pct < 85
+        over_committed = trailing_utilization_pct > _EDP_OVER_COMMITTED_RATIO * 100
 
     end_date = commitment.get('commitmentEndDate')
     months_remaining = months_between(end_date, current_month) if end_date else None
@@ -591,19 +602,23 @@ def compute_commitment_utilization(
         'commitmentType': commitment.get('commitmentType'),
         'monthlyObligation': round(monthly_obligation, 2),
         'actualSpend': round(actual_spend_to_date, 2),
-        'projectedSpend': round(net_billed, 2),
         'isPartial': is_partial,
         'completionRatio': round(completion_ratio, 4),
-        'recurringSpend': round(edp['recurring_spend'], 2),
-        'oneTimeCharges': round(edp['one_time_charges'], 2),
-        'credits': round(edp['credits'], 2),
-        'netBilled': round(net_billed, 2),
-        'excludedServices': edp['excluded_services'],
+        'netTowardEdp': round(edp['net_toward_edp'], 2),
+        'infrastructureSpend': round(edp['infrastructure_spend'], 2),
+        'marketplaceSpend': round(edp['marketplace_spend'], 2),
+        'oneTimeSpend': round(edp['one_time_spend'], 2),
+        'creditsApplied': round(edp['credits_applied'], 2),
+        'suppressedPartialMonth': round(edp['suppressed_partial_month'], 2),
         'utilizationPct': round(edp['utilization_pct'], 1),
+        'status': edp['status'],
+        'statusLabel': edp['status_label'],
+        'statusColor': edp['status_color'],
         'onTrack': edp['on_track'],
-        'overUnderAmount': round(edp['recurring_spend'] - monthly_obligation, 2) if monthly_obligation else None,
+        'overUnderAmount': round(edp['net_toward_edp'] - monthly_obligation, 2) if monthly_obligation else None,
         'trailing3MoAvg': trailing_3mo_avg,
         'underUtilizationRisk': under_utilization_risk,
+        'overCommitted': over_committed,
         'monthsRemaining': months_remaining,
         'expiryWarning': expiry_warning,
         'commitmentEndDate': end_date,

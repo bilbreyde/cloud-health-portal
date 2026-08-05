@@ -64,11 +64,6 @@ def _fmt(n: float) -> str:
     return f'${n:,.2f}'
 
 
-def _one_time_breakdown_text(commitment_utilization: dict) -> str:
-    excluded = commitment_utilization.get('excludedServices') or []
-    if not excluded:
-        return '(none)'
-    return ', '.join(f"{e['service']} ({_fmt(e['amount'])})" for e in excluded)
 
 
 def _anomaly_lines(anomalies: list) -> str:
@@ -127,30 +122,34 @@ def _build_prompt(
 BILLING CONTEXT:
 - {customer_name} has a {cu.get('commitmentTermYears')}-year {cu.get('commitmentType')} commitment at \
 {_fmt(cu.get('commitmentAnnualValue') or 0.0)}/year ({_fmt(cu['monthlyObligation'])}/month)
-- Current month recurring spend: {_fmt(cu['recurringSpend'])} ({cu['utilizationPct']:.1f}% of obligation)
-- One-time charges this month (excluded from EDP calc): {_fmt(cu['oneTimeCharges'])}
-  Breakdown: {_one_time_breakdown_text(cu)}
-- Credits applied: {_fmt(cu['credits'])}
+- Net spend toward EDP this month: {_fmt(cu['netTowardEdp'])} ({cu['utilizationPct']:.1f}% of obligation) — \
+this is an EDP spend commitment, so Marketplace, Enterprise Support, and other one-time charges ALL count \
+toward it, not just recurring infrastructure
+  Infrastructure: {_fmt(cu['infrastructureSpend'])} · Marketplace: {_fmt(cu['marketplaceSpend'])} · \
+Other one-time: {_fmt(cu['oneTimeSpend'])}
+- AWS-applied credits/negations excluded from utilization: {_fmt(cu['creditsApplied'])}
 - {sp_unused_line}
+- Status: {cu.get('statusLabel')}
 
 ANOMALIES THIS MONTH:
 {anomaly_lines}
 
 For each anomaly, provide context:
-- Amazon Marketplace charges are one-time license purchases (e.g. Zscaler). Do not treat as trending.
-  Note as software licensing event.
+- Amazon Marketplace charges are one-time license purchases (e.g. Zscaler). Do not treat as trending, but
+  note that the dollar amount DOES count toward the EDP commitment.
 - Savings Plan Unused indicates committed capacity not being consumed. On EDP this is double-waste —
   flag as priority concern.
-- Enterprise Support is a flat monthly fee — not a trend signal.
-- AWS Partner Pricing Adjustment is a billing correction — not recurring.
+- Enterprise Support is a flat monthly fee — counts toward EDP, not a trend signal.
+- AWS Partner Pricing Adjustment is a billing correction that counts toward EDP — not recurring infrastructure.
 
 THRESHOLD-BASED OPPORTUNITIES:
 {opportunity_lines}
 
 EDP BURN RATE:
-Trailing 3-month recurring average: {_fmt(cu.get('trailing3MoAvg') or 0.0)}
+Trailing 3-month average net spend toward EDP (complete months only, all spend minus AWS credits): \
+{_fmt(cu.get('trailing3MoAvg') or 0.0)}
 Monthly obligation: {_fmt(cu['monthlyObligation'])}
-Status: {'ON TRACK' if cu.get('onTrack') else 'AT RISK — below 85% threshold'}
+Status: {'AT RISK — below 85% threshold' if cu.get('underUtilizationRisk') else ('OVER-COMMITTED — strong renewal position' if cu.get('overCommitted') else 'ON TRACK')}
 
 SIGNAL VS SPEND CORRELATIONS:
 {correlation_lines}

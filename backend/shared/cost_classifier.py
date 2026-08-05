@@ -302,63 +302,77 @@ def project_amount(actual: float, service_name: str, completion_ratio: float) ->
 
 def compute_edp_utilization(services_data: list, monthly_obligation: float, is_partial: bool = False) -> dict:
     """
-    Compute EDP utilization using infrastructure spend only (classify_charge_bucket) —
-    Marketplace, Enterprise Support, AWS Config/CloudTrail, Certificate Manager, and
-    billing adjustments (Partner Pricing Adjustment, refunds/credits) never count toward
-    the commitment. SP true-up lines (Savings Plan/RI true-up) are billing-lag-distorted
-    mid-month, so they're folded into infrastructure spend only when the month is
-    complete (is_partial=False); on a partial month they're excluded entirely and
-    surfaced as a "pending" excluded-service line instead.
+    EDP utilization = all billed spend minus AWS-applied credits. Marketplace,
+    Enterprise Support, Partner Pricing Adjustment, AWS Config/CloudTrail, and SP
+    Unused (on complete months) all COUNT toward the commitment — an EDP is a
+    spend commitment, not an infrastructure-only one, and this dollar has to be
+    billed by AWS to consume it regardless of what it was for. Only genuine
+    AWS-applied credits/negations (which reduce what's actually billed) are
+    excluded. SP true-up lines are still suppressed entirely on a partial month
+    (billing-lag artifacts — shared.cost_classifier.should_suppress_for_partial_month).
     services_data: [{service, amount, projected_amount}]
     """
-    infrastructure_total = 0.0
+    total_billed = 0.0
+    credits_applied = 0.0
+    marketplace_total = 0.0
     one_time_total = 0.0
-    credit_total = 0.0
-    excluded_services = []
+    infrastructure_total = 0.0
+    suppressed_total = 0.0
 
     for svc in services_data:
-        bucket = classify_charge_bucket(svc['service'])
+        service = svc['service']
         amount = svc.get('projected_amount', svc['amount'])
 
-        if bucket == 'sp_true_up':
-            if is_partial:
-                excluded_services.append({
-                    'service': svc['service'],
-                    'amount': amount,
-                    'reason': 'SP true-up pending — shown at month close',
-                })
-            else:
-                infrastructure_total += amount
-        elif bucket == 'billing_adjustment':
-            credit_total += abs(amount)
-            excluded_services.append({
-                'service': svc['service'],
-                'amount': amount,
-                'reason': 'Billing adjustment',
-            })
-        elif bucket == 'one_time':
+        # SP true-up lines are billing-lag artifacts mid-month — suppressed entirely,
+        # not counted toward utilization or credits until the month closes.
+        if is_partial and should_suppress_for_partial_month(service):
+            suppressed_total += amount
+            continue
+
+        classification = classify_service(service)
+
+        # AWS-applied credits/negations reduce the bill — excluded from utilization.
+        if classification['pattern'] == 'credit':
+            credits_applied += abs(amount)
+            continue
+
+        # Everything else counts toward EDP — it was billed, so it consumes commitment.
+        total_billed += amount
+
+        if 'marketplace' in service.lower():
+            marketplace_total += amount
+        elif classification['pattern'] == 'one_time':
             one_time_total += amount
-            excluded_services.append({
-                'service': svc['service'],
-                'amount': amount,
-                'reason': classify_service(svc['service']).get('flag_type', 'One-Time / Flat Fee'),
-            })
         else:
             infrastructure_total += amount
 
-    utilization_pct = (
-        infrastructure_total / monthly_obligation * 100 if monthly_obligation > 0 else 0
-    )
+    net_toward_edp = total_billed  # credit-pattern lines were never added, so already net
+    utilization_pct = (net_toward_edp / monthly_obligation * 100) if monthly_obligation > 0 else 0
+
+    # <85%: At Risk · 85-95%: Watch · 95-110%: On Track · >110%: Over-Committed (still
+    # healthy for an EDP — it just means more than the obligation was consumed).
+    if utilization_pct < 85:
+        status, status_label, status_color = 'at_risk', 'At Risk for Renewal', 'red'
+    elif utilization_pct < 95:
+        status, status_label, status_color = 'watch', 'Watch — Below Target', 'yellow'
+    elif utilization_pct <= 110:
+        status, status_label, status_color = 'on_track', 'On Track', 'green'
+    else:
+        status, status_label, status_color = 'over_committed', 'Over Committed — Strong Renewal Position', 'green'
 
     return {
-        'recurring_spend': infrastructure_total,
-        'one_time_charges': one_time_total,
-        'credits': credit_total,
-        'net_recurring': infrastructure_total - credit_total,
+        'net_toward_edp': net_toward_edp,
+        'infrastructure_spend': infrastructure_total,
+        'marketplace_spend': marketplace_total,
+        'one_time_spend': one_time_total,
+        'credits_applied': credits_applied,
+        'suppressed_partial_month': suppressed_total,
         'monthly_obligation': monthly_obligation,
         'utilization_pct': utilization_pct,
-        'on_track': 85 <= utilization_pct <= 115,
-        'excluded_services': excluded_services,
+        'status': status,
+        'status_label': status_label,
+        'status_color': status_color,
+        'on_track': status in ('on_track', 'over_committed'),
     }
 
 

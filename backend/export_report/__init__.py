@@ -342,10 +342,11 @@ def _build_docx(
         cov_sp = spend_insights.get('coverageAnalysis') or {}
         commitment_util = spend_insights.get('commitmentUtilization') or {}
 
-        # Notable one-time charges, separate from recurring/anomaly analysis — sourced
-        # from the commitment breakdown when available, else from one-time-pattern anomalies.
+        # Notable one-time charges — informational breakout of anomaly-flagged one-time
+        # items. On an EDP these still COUNT toward the commitment (see 4.3); this table
+        # is about visibility into what drove spend, not what's excluded from utilization.
         _h2(doc, '4.2 Notable One-Time Charges')
-        one_time_rows = commitment_util.get('excludedServices') or [
+        one_time_rows = [
             {'service': a['service'], 'amount': a['currentAmount'], 'reason': a.get('flagType', 'One-Time')}
             for a in anomalies if a.get('pattern') == 'one_time'
         ]
@@ -355,7 +356,8 @@ def _build_docx(
             _tbl_header(tbl_ot, ['Service', 'Amount', 'Reason'])
             for r in one_time_rows[:10]:
                 _tbl_row(tbl_ot, [r['service'], _fmt(r['amount']), r['reason']])
-            _para(doc, 'Excluded from EDP/commitment utilization and not extrapolated for projection.',
+            _para(doc, 'One-time / flat-fee charges — not extrapolated for projection. These still count '
+                       'toward EDP/commitment utilization (see 4.3); only AWS-applied credits are excluded.',
                   size=9, color=_GREY)
         else:
             _para(doc, 'No notable one-time charges this period.')
@@ -363,30 +365,37 @@ def _build_docx(
 
         if commitment_util:
             _h2(doc, '4.3 Commitment (EDP) Utilization')
+            _para(doc, 'An EDP is a spend commitment: all billed spend counts toward it, including '
+                       'Marketplace software purchases and one-time/flat fees. Only AWS-applied credits '
+                       'and negations are excluded.', space_after=8)
             tbl_cu = doc.add_table(rows=1, cols=2)
             tbl_cu.style = 'Table Grid'
             _tbl_header(tbl_cu, ['Metric', 'Value'])
             _tbl_row(tbl_cu, ['Commitment Type', commitment_util.get('commitmentType') or '—'])
             _tbl_row(tbl_cu, ['Monthly Obligation', _fmt(commitment_util.get('monthlyObligation', 0))])
-            _tbl_row(tbl_cu, ['Recurring Spend (vs. obligation)', _fmt(commitment_util.get('recurringSpend', 0))])
+            _tbl_row(tbl_cu, ['Net Spend Toward EDP', _fmt(commitment_util.get('netTowardEdp', 0))])
+            _tbl_row(tbl_cu, ['  Infrastructure', _fmt(commitment_util.get('infrastructureSpend', 0))])
+            _tbl_row(tbl_cu, ['  Marketplace', _fmt(commitment_util.get('marketplaceSpend', 0))])
+            _tbl_row(tbl_cu, ['  Other One-Time / Flat Fee', _fmt(commitment_util.get('oneTimeSpend', 0))])
             _tbl_row(tbl_cu, ['Utilization %', f"{commitment_util.get('utilizationPct', 0)}%"])
-            _tbl_row(tbl_cu, ['One-Time Charges (excluded)', _fmt(commitment_util.get('oneTimeCharges', 0))])
-            _tbl_row(tbl_cu, ['Credits Applied', f"-{_fmt(commitment_util.get('credits', 0))}"])
-            _tbl_row(tbl_cu, ['Net Billed', _fmt(commitment_util.get('netBilled', 0))])
-            _tbl_row(tbl_cu, ['Status', 'On Track' if commitment_util.get('onTrack') else 'Off Track'])
+            _tbl_row(tbl_cu, ['AWS Credits/Negations Applied (excluded)', f"-{_fmt(commitment_util.get('creditsApplied', 0))}"])
+            _tbl_row(tbl_cu, ['Status', commitment_util.get('statusLabel') or '—'])
             over_under = commitment_util.get('overUnderAmount', 0)
             _tbl_row(tbl_cu, [
-                'Recurring Over / Under Obligation',
+                'Over / Under Obligation',
                 (('+' if over_under >= 0 else '') + _fmt(over_under)),
             ])
-            _tbl_row(tbl_cu, ['Trailing 3-Month Recurring Average', _fmt(commitment_util.get('trailing3MoAvg', 0))])
+            _tbl_row(tbl_cu, ['Trailing 3-Month Average (net toward EDP)', _fmt(commitment_util.get('trailing3MoAvg', 0))])
             months_remaining = commitment_util.get('monthsRemaining')
             if months_remaining is not None:
                 _tbl_row(tbl_cu, ['Months Remaining on Commitment', str(months_remaining)])
             _para(doc)
             if commitment_util.get('underUtilizationRisk'):
-                _para(doc, 'Risk: trailing 3-month recurring average is below 85% of the monthly '
+                _para(doc, 'Risk: trailing 3-month average net spend toward EDP is below 85% of the monthly '
                            'obligation — this commitment is at risk of under-utilization.')
+            if commitment_util.get('overCommitted'):
+                _para(doc, 'Trailing 3-month average net spend toward EDP is above 110% of the monthly '
+                           'obligation — strong renewal position, no action needed.')
             if commitment_util.get('expiryWarning'):
                 _para(doc, 'Renewal decision needed — commitment expires within 6 months; '
                            'a current pricing vs. market rate analysis is recommended.')
