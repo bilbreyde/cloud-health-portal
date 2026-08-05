@@ -19,14 +19,40 @@ def _int_param(req: func.HttpRequest, name: str, default: int) -> int:
 
 
 def main(req: func.HttpRequest) -> func.HttpResponse:
-    logging.info('run_trends triggered')
+    logging.info('run_trends triggered: %s', req.method)
     if req.method == 'OPTIONS':
         return cors_options()
     try:
+        if req.method == 'DELETE':
+            return _handle_delete(req)
         return _handle(req)
     except Exception as exc:
         logging.exception('run_trends unhandled error')
         return cors_response({'error': str(exc)}, 500)
+
+
+def _handle_delete(req: func.HttpRequest) -> func.HttpResponse:
+    """Bulk cleanup: delete ALL TrendData for a customer/month/year, independent of
+    any single upload — used after uploads for that period have already been removed
+    (or to clean up orphaned trend data left over from before delete-upload existed)."""
+    customer_id = req.route_params.get('customerId', '').strip()
+    if not customer_id:
+        return cors_response({'error': 'customerId route parameter is required'}, 400)
+
+    month_raw = (req.params.get('month') or '').strip()
+    year_raw = (req.params.get('year') or '').strip()
+    if not month_raw or not year_raw:
+        return cors_response({'error': 'month and year query parameters are required'}, 400)
+
+    try:
+        month, year = int(month_raw), int(year_raw)
+    except ValueError:
+        return cors_response({'error': 'month and year must be integers'}, 400)
+    if not 1 <= month <= 12:
+        return cors_response({'error': 'month must be 1-12'}, 400)
+
+    deleted = cosmos_client.delete_trends_for_month(customer_id, month, year)
+    return cors_response({'deletedCount': deleted, 'month': month, 'year': year})
 
 
 def _handle(req: func.HttpRequest) -> func.HttpResponse:

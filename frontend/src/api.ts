@@ -11,6 +11,14 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
   return res.json() as Promise<T>
 }
 
+async function requestNoContent(url: string, init?: RequestInit): Promise<void> {
+  const res = await fetch(url, init)
+  if (!res.ok) {
+    const text = await res.text()
+    throw new Error(text || `HTTP ${res.status}`)
+  }
+}
+
 export function fetchCustomers(): Promise<Customer[]> {
   return request<Customer[]>(`${BASE}/customers`)
 }
@@ -134,6 +142,20 @@ export function patchUpload(
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   })
+}
+
+export function deleteUpload(uploadId: string, customerId: string): Promise<void> {
+  return requestNoContent(`${BASE}/upload/${uploadId}?customerId=${encodeURIComponent(customerId)}`, {
+    method: 'DELETE',
+  })
+}
+
+export function deleteTrendsForMonth(
+  customerId: string,
+  month: number,
+  year: number,
+): Promise<{ deletedCount: number; month: number; year: number }> {
+  return request(`${BASE}/trends/${customerId}?month=${month}&year=${year}`, { method: 'DELETE' })
 }
 
 export function fetchExceptions(customerId: string): Promise<ExceptionRecord[]> {

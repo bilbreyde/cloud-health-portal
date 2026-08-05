@@ -6,7 +6,7 @@
       "type": "httpTrigger",
       "direction": "in",
       "name": "req",
-      "methods": ["patch", "options"],
+      "methods": ["patch", "delete", "options"],
       "route": "upload/{uploadId}"
     },
     {

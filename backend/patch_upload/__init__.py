@@ -5,21 +5,54 @@ import azure.functions as func
 import pandas as pd
 
 from shared import blob_client, cosmos_client
-from shared.response_helpers import cors_options, cors_response
+from shared.response_helpers import cors_no_content, cors_options, cors_response
 from shared.trend_engine import aggregate_csv
 
 VALID_SERVICE_TYPES = {'EC2', 'EBS', 'RDS', 'S3', 'ElastiCache', 'Redshift', 'OpenSearch', 'DynamoDB', 'Consolidated'}
 
 
 def main(req: func.HttpRequest) -> func.HttpResponse:
-    logging.info('patch_upload triggered')
+    logging.info('patch_upload triggered: %s', req.method)
     if req.method == 'OPTIONS':
         return cors_options()
     try:
+        if req.method == 'DELETE':
+            return _handle_delete(req)
         return _handle(req)
     except Exception as exc:
         logging.exception('patch_upload unhandled error')
         return cors_response({'error': str(exc)}, 500)
+
+
+def _handle_delete(req: func.HttpRequest) -> func.HttpResponse:
+    upload_id = req.route_params.get('uploadId', '').strip()
+    if not upload_id:
+        return cors_response({'error': 'uploadId route parameter is required'}, 400)
+
+    customer_id = (req.params.get('customerId') or '').strip()
+    if not customer_id:
+        return cors_response({'error': 'customerId query parameter is required'}, 400)
+
+    upload = cosmos_client.get_upload(upload_id, customer_id)
+    if upload is None:
+        return cors_response({'error': f'Upload {upload_id!r} not found'}, 404)
+
+    deleted_trends = cosmos_client.delete_trends_for_upload(
+        customer_id, upload.month, upload.year, upload.serviceType, upload.snapshotDate,
+    )
+
+    try:
+        blob_client.delete_blob(upload.blobPath)
+    except Exception as exc:
+        logging.warning('Blob delete failed for upload %s (non-fatal): %s', upload_id, exc)
+
+    cosmos_client.delete_upload(upload_id, customer_id)
+
+    logging.info(
+        'Deleted upload %s (%s) — %d linked TrendData record(s) removed',
+        upload_id, upload.fileName, deleted_trends,
+    )
+    return cors_no_content()
 
 
 def _handle(req: func.HttpRequest) -> func.HttpResponse:

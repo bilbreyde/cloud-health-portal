@@ -22,6 +22,10 @@ def cors_options() -> func.HttpResponse:
     return func.HttpResponse(status_code=200, headers=CORS_HEADERS)
 
 
+def cors_no_content() -> func.HttpResponse:
+    return func.HttpResponse(status_code=204, headers=CORS_HEADERS)
+
+
 def cors_error(message: str, status: int = 500) -> func.HttpResponse:
     return func.HttpResponse(
         body=json.dumps({"error": message}),

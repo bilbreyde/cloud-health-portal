@@ -6,7 +6,7 @@
       "type": "httpTrigger",
       "direction": "in",
       "name": "req",
-      "methods": ["get", "options"],
+      "methods": ["get", "delete", "options"],
       "route": "trends/{customerId}"
     },
     {

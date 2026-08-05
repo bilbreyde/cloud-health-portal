@@ -191,6 +191,36 @@ def upsert_trend(trend: TrendData) -> TrendData:
     return trend
 
 
+def delete_trend(trend_id: str, customer_id: str) -> None:
+    container = _get_container("trend_data")
+    container.delete_item(item=trend_id, partition_key=customer_id)
+
+
+def delete_trends_for_upload(
+    customer_id: str, month: int, year: int, service_type: str, snapshot_date: str,
+) -> int:
+    """Delete TrendData records linked to one Upload — same match rule patch_upload
+    uses to find "linked" trends (customer/month/year/serviceType/snapshotDate).
+    Returns the number of records deleted."""
+    matches = [
+        t for t in list_trends(customer_id, year=year, service_type=service_type)
+        if t.month == month and t.snapshotDate == snapshot_date
+    ]
+    for t in matches:
+        delete_trend(t.id, customer_id)
+    return len(matches)
+
+
+def delete_trends_for_month(customer_id: str, month: int, year: int) -> int:
+    """Delete ALL TrendData records for a customer/month/year, across every service
+    and snapshot — for bulk cleanup independent of any single upload. Returns the
+    number of records deleted."""
+    matches = [t for t in list_trends(customer_id, year=year) if t.month == month]
+    for t in matches:
+        delete_trend(t.id, customer_id)
+    return len(matches)
+
+
 # ── reports ───────────────────────────────────────────────────────────────────
 
 def create_report(report: Report) -> Report:

@@ -1,7 +1,7 @@
 import os
 from typing import Optional
 
-from azure.core.exceptions import ResourceExistsError
+from azure.core.exceptions import ResourceExistsError, ResourceNotFoundError
 from azure.storage.blob import BlobServiceClient, ContentSettings
 
 _CONTAINER_NAME = "cloud-health-portal"
@@ -118,6 +118,14 @@ def download_file(blob_path: str) -> bytes:
     """Download any blob by its full path."""
     client = _get_blob(blob_path)
     return client.download_blob().readall()
+
+
+def delete_blob(blob_path: str) -> None:
+    """Delete a blob by its full path. No-op if it's already gone."""
+    try:
+        _get_blob(blob_path).delete_blob()
+    except ResourceNotFoundError:
+        pass
 
 
 def list_uploads(
