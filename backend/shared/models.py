@@ -355,6 +355,40 @@ class MarketplacePurchase:
 
 
 @dataclass
+class SavingsCoverage:
+    id: str
+    customerId: str
+    month: str               # YYYY-MM
+    ec2SpCoveragePct: Optional[float]
+    ec2RiCoveragePct: Optional[float]
+    ec2SpotCoveragePct: Optional[float]
+    importedAt: datetime
+
+    def to_dict(self) -> dict:
+        return {
+            'id': self.id,
+            'customerId': self.customerId,
+            'month': self.month,
+            'ec2SpCoveragePct': self.ec2SpCoveragePct,
+            'ec2RiCoveragePct': self.ec2RiCoveragePct,
+            'ec2SpotCoveragePct': self.ec2SpotCoveragePct,
+            'importedAt': self.importedAt.isoformat(),
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> 'SavingsCoverage':
+        return cls(
+            id=d['id'],
+            customerId=d['customerId'],
+            month=d['month'],
+            ec2SpCoveragePct=d.get('ec2SpCoveragePct'),
+            ec2RiCoveragePct=d.get('ec2RiCoveragePct'),
+            ec2SpotCoveragePct=d.get('ec2SpotCoveragePct'),
+            importedAt=datetime.fromisoformat(d['importedAt']),
+        )
+
+
+@dataclass
 class Template:
     id: str
     customerId: str

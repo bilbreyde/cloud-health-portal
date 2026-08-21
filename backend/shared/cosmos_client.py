@@ -6,7 +6,7 @@ from typing import Optional
 
 from azure.cosmos import CosmosClient, PartitionKey, exceptions
 
-from .models import CostHistoryRecord, Customer, ExceptionRecord, MarketplacePurchase, Report, Template, TrendData, Upload
+from .models import CostHistoryRecord, Customer, ExceptionRecord, MarketplacePurchase, Report, SavingsCoverage, Template, TrendData, Upload
 from .cost_classifier import classify_charge_bucket, classify_service, should_suppress_for_partial_month
 from .cost_classifier import project_amount as classify_project_amount
 from .spend_insights_engine import is_partial_month, project_amount
@@ -27,6 +27,7 @@ _CONTAINERS = {
     "exceptions": "/customerId",
     "cost_history": "/customerId",
     "marketplace_purchases": "/customerId",
+    "savings_coverage": "/customerId",
 }
 
 # customers container is special — the customer IS the partition, so we store
@@ -53,6 +54,23 @@ def _get_container(name: str):
     client = _get_client()
     db = client.get_database_client(_DB_NAME)
     return db.get_container_client(name)
+
+
+_provisioned_containers: set = set()
+
+
+def _ensure_container(name: str) -> None:
+    """Create a single container if it doesn't already exist, memoized per warm
+    worker process. Every other container here relies on ensure_schema() having
+    been run manually once against Cosmos; savings_coverage is provisioned
+    lazily instead since there's no deploy-time hook that calls ensure_schema()."""
+    if name in _provisioned_containers:
+        return
+    client = _get_client()
+    db = client.create_database_if_not_exists(_DB_NAME)
+    pk_path = _CUSTOMER_PARTITION_KEY if name == 'customers' else _CONTAINERS[name]
+    db.create_container_if_not_exists(id=name, partition_key=PartitionKey(path=pk_path))
+    _provisioned_containers.add(name)
 
 
 def ensure_schema() -> None:
@@ -540,7 +558,7 @@ def get_cost_history_summary(customer_id: str, months: list) -> dict:
         'monthlyTotals': [],
         'byService': [],
         'topServices': [],
-        'savingsPlanCoverage': {'covered': 0.0, 'onDemand': 0.0, 'coveragePct': 0.0},
+        'savingsPlanCoverage': {'covered': 0.0, 'onDemand': 0.0, 'coveragePct': None, 'sourceMonth': None, 'importedAt': None},
         'projectedCurrentMonth': 0.0,
         'isPartial': False,
         'completionRatio': 1.0,
@@ -727,7 +745,23 @@ def get_cost_history_summary(customer_id: str, months: list) -> dict:
     covered = abs(savings_plan_by_month.get(current_month, 0.0))
     ec2_compute_direct = ec2_compute_by_month.get(current_month, 0.0)
     on_demand = max(0.0, ec2_compute_direct)
-    coverage_pct = round((covered / (covered + on_demand) * 100), 1) if (covered + on_demand) > 0 else 0.0
+
+    # SP coverage % is sourced from the CloudHealth Savings export, never derived
+    # from CostHistory negation credits — those credits are $0 until month-end
+    # true-up, so a from-CostHistory ratio reads as 0.0% for the entire partial
+    # current month. Falls back to the most recent imported month if the current
+    # month hasn't been imported yet; None (not 0.0%) if nothing has ever been
+    # imported, so the UI can show "N/A" instead of a misleading zero.
+    coverage_record = get_savings_coverage_with_fallback(customer_id, current_month)
+    if coverage_record is not None and coverage_record.ec2SpCoveragePct is not None:
+        coverage_pct = round(coverage_record.ec2SpCoveragePct, 1)
+        coverage_source_month = coverage_record.month
+        coverage_imported_at = coverage_record.importedAt.isoformat()
+    else:
+        coverage_pct = None
+        coverage_source_month = None
+        coverage_imported_at = None
+
     direct_total = direct_by_month.get(current_month, 0.0)
 
     projected_current_month = round(project_amount(direct_total, completion_ratio), 2) if is_partial \
@@ -741,6 +775,8 @@ def get_cost_history_summary(customer_id: str, months: list) -> dict:
             'covered': round(covered, 2),
             'onDemand': round(on_demand, 2),
             'coveragePct': coverage_pct,
+            'sourceMonth': coverage_source_month,
+            'importedAt': coverage_imported_at,
         },
         'projectedCurrentMonth': projected_current_month,
         'isPartial': is_partial,
@@ -805,3 +841,71 @@ def update_marketplace_purchase_note(customer_id: str, month: str, vendor_note: 
     container = _get_container('marketplace_purchases')
     container.upsert_item(record.to_dict())
     return record
+
+
+# ── savings_coverage ─────────────────────────────────────────────────────────
+
+def _savings_coverage_id(customer_id: str, month: str) -> str:
+    # Deterministic — at most one coverage record per (customer, month); re-importing
+    # the same Savings CSV overwrites rather than duplicates.
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, f'savings-coverage:{customer_id}:{month}'))
+
+
+def upsert_savings_coverage(
+    customer_id: str,
+    month: str,
+    ec2_sp_coverage_pct: Optional[float] = None,
+    ec2_ri_coverage_pct: Optional[float] = None,
+    ec2_spot_coverage_pct: Optional[float] = None,
+    imported_at: Optional[datetime] = None,
+) -> SavingsCoverage:
+    _ensure_container('savings_coverage')
+    container = _get_container('savings_coverage')
+    doc_id = _savings_coverage_id(customer_id, month)
+    now = imported_at or datetime.now(timezone.utc)
+    record = SavingsCoverage(
+        id=doc_id,
+        customerId=customer_id,
+        month=month,
+        ec2SpCoveragePct=ec2_sp_coverage_pct,
+        ec2RiCoveragePct=ec2_ri_coverage_pct,
+        ec2SpotCoveragePct=ec2_spot_coverage_pct,
+        importedAt=now,
+    )
+    container.upsert_item(record.to_dict())
+    return record
+
+
+def list_savings_coverage(customer_id: str) -> list[SavingsCoverage]:
+    _ensure_container('savings_coverage')
+    container = _get_container('savings_coverage')
+    items = container.query_items(
+        query='SELECT * FROM c WHERE c.customerId = @customerId',
+        parameters=[{'name': '@customerId', 'value': customer_id}],
+        partition_key=customer_id,
+    )
+    results = [SavingsCoverage.from_dict(i) for i in items]
+    return sorted(results, key=lambda r: r.month, reverse=True)
+
+
+def get_savings_coverage(customer_id: str, month: str) -> Optional[SavingsCoverage]:
+    _ensure_container('savings_coverage')
+    container = _get_container('savings_coverage')
+    doc_id = _savings_coverage_id(customer_id, month)
+    try:
+        return SavingsCoverage.from_dict(container.read_item(item=doc_id, partition_key=customer_id))
+    except exceptions.CosmosResourceNotFoundError:
+        return None
+
+
+def get_savings_coverage_with_fallback(customer_id: str, month: str) -> Optional[SavingsCoverage]:
+    """The requested month if imported; otherwise the most recent imported month.
+
+    Used by cost_history's dashboard summary so a not-yet-imported current month
+    still shows last month's SP coverage rather than nothing at all.
+    """
+    exact = get_savings_coverage(customer_id, month)
+    if exact is not None:
+        return exact
+    all_records = list_savings_coverage(customer_id)
+    return all_records[0] if all_records else None

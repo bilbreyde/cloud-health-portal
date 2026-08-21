@@ -1,4 +1,4 @@
-import type { CommitmentContext, CostHistoryImportResult, CostHistorySummary, Customer, DashboardNarrativeResponse, ExceptionRecord, ExceptionSummary, ImportReportResponse, MarketplacePurchase, Report, ReportResponse, SpendInsightsResponse, TrendsResponse, UploadRecord, UploadResult } from './types'
+import type { CommitmentContext, CostHistoryImportResult, CostHistorySummary, Customer, DashboardNarrativeResponse, ExceptionRecord, ExceptionSummary, ImportReportResponse, MarketplacePurchase, Report, ReportResponse, SavingsCoverageImportResult, SavingsCoverageRecord, SpendInsightsResponse, TrendsResponse, UploadRecord, UploadResult } from './types'
 
 const BASE = (import.meta.env.VITE_API_URL ?? '') + '/api'
 
@@ -202,6 +202,18 @@ export function fetchCostHistory(
   if (params?.endMonth) qs.set('endMonth', params.endMonth)
   const suffix = qs.toString() ? `?${qs}` : ''
   return request<CostHistorySummary>(`${BASE}/cost-history/${customerId}${suffix}`)
+}
+
+export function importSavingsCoverage(customerId: string, formData: FormData): Promise<SavingsCoverageImportResult> {
+  return request<SavingsCoverageImportResult>(`${BASE}/savings-coverage/${customerId}/import`, {
+    method: 'POST',
+    body: formData,
+  })
+}
+
+export function fetchSavingsCoverage(customerId: string, month?: string): Promise<SavingsCoverageRecord> {
+  const qs = month ? `?month=${encodeURIComponent(month)}` : ''
+  return request<SavingsCoverageRecord>(`${BASE}/savings-coverage/${customerId}${qs}`)
 }
 
 export function fetchSpendInsights(

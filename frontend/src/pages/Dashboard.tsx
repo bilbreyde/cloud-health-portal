@@ -1,10 +1,11 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
+import type { ReactNode } from 'react'
 import { Link } from 'react-router-dom'
 import {
   Bar, BarChart, CartesianGrid, Cell, LabelList, Legend, Line, LineChart,
   ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis,
 } from 'recharts'
-import { fetchCostHistory, fetchDashboardNarrative, fetchTrends, patchCommitment } from '../api'
+import { fetchCostHistory, fetchDashboardNarrative, fetchTrends, importSavingsCoverage, patchCommitment } from '../api'
 import MarketplaceBanner from '../components/MarketplaceBanner'
 import PartialMonthBanner from '../components/PartialMonthBanner'
 import { useCustomer } from '../context/CustomerContext'
@@ -40,6 +41,19 @@ function svcColor(svc: string) { return SERVICE_COLORS[svc] ?? '#767676' }
 
 function fmtMoney(n: number) {
   return '$' + Math.abs(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+}
+// Explicit +/- sign so a negative delta is never displayed as if it had no
+// sign at all (fmtMoney alone always renders the absolute value).
+function fmtSignedMoney(n: number) {
+  return `${n < 0 ? '-' : '+'}${fmtMoney(n)}`
+}
+function fmtSignedPct(n: number) {
+  return `${n < 0 ? '-' : '+'}${Math.abs(n).toFixed(1)}%`
+}
+// Cost increase = red (bad), decrease = green (good) — matches the rest of the
+// dashboard (Top Services table, MoM Delta chart caption).
+function momColor(n: number) {
+  return n > 0 ? 'var(--red)' : n < 0 ? 'var(--green)' : undefined
 }
 function fmtK(n: number) {
   const abs = Math.abs(n)
@@ -243,12 +257,12 @@ function CostHistoryTooltip({ active, payload, label }: {
 }
 
 function CostKpiCard({
-  label, value, accent, sub, subColor, sub2, sub3, tooltip, tooltip3,
+  label, value, accent, sub, subColor, sub2, sub3, tooltip, tooltip3, action,
 }: {
   label: string; value: string; accent?: string
   sub?: string; subColor?: string; sub2?: string
   sub3?: string; tooltip3?: string
-  tooltip?: string
+  tooltip?: string; action?: ReactNode
 }) {
   return (
     <div style={{
@@ -256,14 +270,17 @@ function CostKpiCard({
       border: '1px solid var(--border)', borderRadius: 8,
       borderTop: `3px solid ${accent ?? 'var(--border)'}`,
     }}>
-      <div style={{
-        display: 'flex', alignItems: 'center', gap: 4, fontSize: 10, color: 'var(--muted)',
-        textTransform: 'uppercase', letterSpacing: '.5px', marginBottom: 6,
-      }}>
-        {label}
-        {tooltip && (
-          <span title={tooltip} style={{ cursor: 'help', fontSize: 11, opacity: .7 }}>ⓘ</span>
-        )}
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 4, marginBottom: 6 }}>
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: 4, fontSize: 10, color: 'var(--muted)',
+          textTransform: 'uppercase', letterSpacing: '.5px',
+        }}>
+          {label}
+          {tooltip && (
+            <span title={tooltip} style={{ cursor: 'help', fontSize: 11, opacity: .7 }}>ⓘ</span>
+          )}
+        </div>
+        {action}
       </div>
       <div style={{ fontSize: 22, fontWeight: 700, color: accent ?? 'var(--text)' }}>{value}</div>
       {sub && (
@@ -290,7 +307,7 @@ function ComputeCoverageWidget({ coverage }: { coverage: SavingsPlanCoverage }) 
       <div className="card-title">Compute Coverage</div>
       <div style={{ textAlign: 'center', marginBottom: 14 }}>
         <div style={{ fontSize: 28, fontWeight: 700, color: COST_PALETTE[0] }}>
-          {coverage.coveragePct.toFixed(1)}%
+          {coverage.coveragePct != null ? `${coverage.coveragePct.toFixed(1)}%` : 'N/A'}
         </div>
         <div style={{ fontSize: 10, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '.5px' }}>
           Savings Plan Coverage
@@ -398,6 +415,10 @@ export default function Dashboard() {
   const [costLoading, setCostLoading] = useState(false)
   const [costError,   setCostError]   = useState('')
 
+  const [coverageImporting, setCoverageImporting] = useState(false)
+  const [coverageError,     setCoverageError]     = useState('')
+  const coverageInputRef = useRef<HTMLInputElement>(null)
+
   useEffect(() => {
     setData(null)
     setError('')
@@ -440,6 +461,24 @@ export default function Dashboard() {
     fetchTrends(customerId, { startMonth, startYear, endMonth, endYear })
       .then(d => { setData(d); setLoading(false) })
       .catch(e => { setError(String(e)); setLoading(false) })
+  }
+
+  async function handleCoverageFileSelected(file: File | undefined) {
+    if (!customerId || !file) return
+    setCoverageImporting(true)
+    setCoverageError('')
+    const fd = new FormData()
+    fd.append('file', file)
+    try {
+      await importSavingsCoverage(customerId, fd)
+      const refreshed = await fetchCostHistory(customerId)
+      setCostData(refreshed)
+    } catch (e) {
+      setCoverageError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setCoverageImporting(false)
+      if (coverageInputRef.current) coverageInputRef.current.value = ''
+    }
   }
 
   async function toggleCommitment(idx: number, checked: boolean) {
@@ -534,13 +573,25 @@ export default function Dashboard() {
   const unnotedMarketplace = costTotals.flatMap(m =>
     m.marketplacePurchases.filter(p => !p.vendorNote).map(p => ({ month: m.month, amount: p.amount })))
 
-  // Software Licensing KPI card: Marketplace purchases in the current or prior month.
-  const recentMarketplace = costTotals.slice(-2)
-    .flatMap(m => m.marketplacePurchases.map(p => ({ ...p, month: m.month })))
-  const recentMarketplaceTotal = recentMarketplace.reduce((sum, p) => sum + p.amount, 0)
-  const recentMarketplaceLabel = recentMarketplace.length > 1
-    ? `${recentMarketplace.length} purchases`
-    : (recentMarketplace[0]?.vendorNote || 'Unidentified purchase')
+  // Software Licensing KPI card: exactly ONE month's Marketplace purchases —
+  // the current partial month if it has any, otherwise the most recent month
+  // that did. Never summed across multiple months (that double-counts distinct
+  // vendors' purchases from different months into one misleading total).
+  const currentMonthHasMarketplace = !!currentMonthPartial?.marketplacePurchases.length
+  const mostRecentMarketplaceMonth = [...costTotals].reverse()
+    .find(m => m.marketplacePurchases.length > 0) ?? null
+  const softwareLicensingMonth = currentMonthHasMarketplace ? currentMonthPartial : mostRecentMarketplaceMonth
+  const softwareLicensingTotal = softwareLicensingMonth
+    ? softwareLicensingMonth.marketplacePurchases.reduce((sum, p) => sum + p.amount, 0)
+    : 0
+  const softwareLicensingNotes = softwareLicensingMonth
+    ? softwareLicensingMonth.marketplacePurchases.map(p => p.vendorNote).filter(Boolean).join(', ')
+    : ''
+  const softwareLicensingLabel = softwareLicensingMonth
+    ? currentMonthHasMarketplace
+      ? `${fmtCostMonth(softwareLicensingMonth.month)} (this month)`
+      : `${fmtCostMonth(softwareLicensingMonth.month)}${softwareLicensingNotes ? `: ${softwareLicensingNotes}` : ''}`
+    : ''
 
   const lastFullMonthMarketplace = lastFullMonth?.marketplacePurchases?.[0]
 
@@ -649,6 +700,7 @@ export default function Dashboard() {
           </h2>
 
           {costError && <div className="alert alert-error" style={{ marginBottom: 16 }}>{costError}</div>}
+          {coverageError && <div className="alert alert-error" style={{ marginBottom: 16 }}>{coverageError}</div>}
 
           {!costLoading && !costHasData && !costError && (
             <div className="card" style={{ textAlign: 'center', padding: '24px 20px' }}>
@@ -681,26 +733,48 @@ export default function Dashboard() {
                 />
                 <CostKpiCard
                   label="Infrastructure MoM"
-                  value={costMomDelta !== null
-                    ? `${costMomDelta >= 0 ? '+' : ''}${fmtMoney(costMomDelta)}`
-                    : '—'}
-                  accent={costMomDelta !== null ? (costMomDelta > 0 ? 'var(--red)' : 'var(--green)') : undefined}
-                  sub={costMomPct !== null ? `${costMomPct >= 0 ? '+' : ''}${costMomPct.toFixed(1)}%` : undefined}
+                  value={costMomDelta !== null ? fmtSignedMoney(costMomDelta) : '—'}
+                  accent={costMomDelta !== null ? momColor(costMomDelta) : undefined}
+                  sub={costMomPct !== null ? fmtSignedPct(costMomPct) : undefined}
+                  subColor={costMomPct !== null ? momColor(costMomPct) : undefined}
                   tooltip="Compares recurring infrastructure spend only. One-time Marketplace purchases excluded."
                 />
                 <CostKpiCard
                   label="Savings Plan Coverage"
-                  value={costData ? `${costData.savingsPlanCoverage.coveragePct.toFixed(1)}%` : '—'}
+                  value={costData?.savingsPlanCoverage.coveragePct != null
+                    ? `${costData.savingsPlanCoverage.coveragePct.toFixed(1)}%`
+                    : 'N/A'}
                   accent={COST_PALETTE[0]}
-                  sub="EC2 compute covered by Savings Plan"
+                  sub="Source: CloudHealth SP report"
+                  tooltip="Imported from the CloudHealth Savings export — not derived from CostHistory, since SP negation credits are $0 until month-end true-up."
+                  action={(
+                    <>
+                      <input
+                        ref={coverageInputRef}
+                        type="file"
+                        accept=".csv"
+                        style={{ display: 'none' }}
+                        onChange={e => handleCoverageFileSelected(e.target.files?.[0])}
+                      />
+                      <button
+                        className="btn btn-ghost"
+                        onClick={() => coverageInputRef.current?.click()}
+                        disabled={!customerId || coverageImporting}
+                        style={{ fontSize: 10, padding: '1px 6px' }}
+                      >
+                        {coverageImporting ? '…' : 'Update'}
+                      </button>
+                    </>
+                  )}
                 />
-                {recentMarketplace.length > 0 && (
+                {softwareLicensingMonth && (
                   <CostKpiCard
                     label="Software Licensing"
-                    value={fmtMoney(recentMarketplaceTotal)}
+                    value={fmtMoney(softwareLicensingTotal)}
                     accent="#0078D4"
-                    sub={recentMarketplaceLabel}
-                    tooltip="One-time AWS Marketplace software license purchases in the current or prior month. Excluded from infrastructure trend and MoM."
+                    sub={softwareLicensingLabel}
+                    tooltip="Most recent single month's AWS Marketplace software license purchases. Never summed across months. Excluded from infrastructure trend and MoM."
+                    action={<Link to="/spend-insights#marketplace-section" style={{ fontSize: 10 }}>View all</Link>}
                   />
                 )}
                 <CostKpiCard
@@ -718,8 +792,8 @@ export default function Dashboard() {
                       })()
                     : (latestCostMonth ? `Not yet started (data through ${fmtCostMonth(latestCostMonth.month)})` : undefined)}
                   sub3={projectedMomDelta !== null
-                    ? `Projected MoM: ${projectedMomDelta >= 0 ? '+' : ''}${fmtMoney(projectedMomDelta)}` +
-                      (projectedMomPct !== null ? ` (${projectedMomPct >= 0 ? '+' : ''}${projectedMomPct.toFixed(1)}%)` : '')
+                    ? `Projected MoM: ${fmtSignedMoney(projectedMomDelta)}` +
+                      (projectedMomPct !== null ? ` (${fmtSignedPct(projectedMomPct)})` : '')
                     : undefined}
                   tooltip3="MoM comparison uses projected full-month spend based on current daily run rate. Actual may vary."
                 />

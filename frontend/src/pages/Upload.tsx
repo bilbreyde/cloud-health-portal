@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
-import { fetchCostHistory, fetchTrends, importCostHistory, uploadCsv } from '../api'
+import { fetchCostHistory, fetchSavingsCoverage, fetchTrends, importCostHistory, importSavingsCoverage, uploadCsv } from '../api'
 import { useCustomer } from '../context/CustomerContext'
-import type { CostHistoryImportResult, CostHistorySummary, UploadResult } from '../types'
+import type { CostHistoryImportResult, CostHistorySummary, SavingsCoverageImportResult, SavingsCoverageRecord, UploadResult } from '../types'
 
 const MONTH_ABBR = ['January','February','March','April','May','June',
                     'July','August','September','October','November','December']
@@ -55,6 +55,13 @@ export default function Upload() {
   const [costSummary, setCostSummary] = useState<CostHistorySummary | null>(null)
   const costInputRef = useRef<HTMLInputElement>(null)
 
+  const [savingsFile, setSavingsFile] = useState<File | null>(null)
+  const [savingsImporting, setSavingsImporting] = useState(false)
+  const [savingsResult, setSavingsResult] = useState<SavingsCoverageImportResult | null>(null)
+  const [savingsError, setSavingsError] = useState('')
+  const [savingsCoverage, setSavingsCoverage] = useState<SavingsCoverageRecord | null>(null)
+  const savingsInputRef = useRef<HTMLInputElement>(null)
+
   // Fetch existing snapshot counts whenever customer/month/year changes
   useEffect(() => {
     if (!customerId) { setSnapshotsByService({}); return }
@@ -81,6 +88,15 @@ export default function Upload() {
     return () => { cancelled = true }
   }, [customerId])
 
+  useEffect(() => {
+    if (!customerId) { setSavingsCoverage(null); return }
+    let cancelled = false
+    fetchSavingsCoverage(customerId)
+      .then(data => { if (!cancelled) setSavingsCoverage(data) })
+      .catch(() => { if (!cancelled) setSavingsCoverage(null) })
+    return () => { cancelled = true }
+  }, [customerId])
+
   async function importCostHistoryFile() {
     if (!customerId || !costFile) return
     setCostImporting(true)
@@ -104,6 +120,26 @@ export default function Upload() {
   const costLastMonth = costSummary?.monthlyTotals.length
     ? costSummary.monthlyTotals[costSummary.monthlyTotals.length - 1].month
     : null
+
+  async function importSavingsCoverageFile() {
+    if (!customerId || !savingsFile) return
+    setSavingsImporting(true)
+    setSavingsError('')
+    setSavingsResult(null)
+    const fd = new FormData()
+    fd.append('file', savingsFile)
+    try {
+      const result = await importSavingsCoverage(customerId, fd)
+      setSavingsResult(result)
+      setSavingsFile(null)
+      if (savingsInputRef.current) savingsInputRef.current.value = ''
+      fetchSavingsCoverage(customerId).then(setSavingsCoverage).catch(() => {})
+    } catch (e) {
+      setSavingsError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setSavingsImporting(false)
+    }
+  }
 
   function addFiles(files: FileList | File[]) {
     const arr = Array.from(files).filter(f => f.name.endsWith('.csv'))
@@ -354,6 +390,50 @@ export default function Upload() {
             {typeof costResult.previousRowsReplaced === 'number' && costResult.previousRowsReplaced > 0 && (
               <> · replaced {costResult.previousRowsReplaced} previously imported rows</>
             )}
+          </div>
+        )}
+      </div>
+
+      <h1 className="page-title" style={{ marginTop: 32 }}>EC2 Savings Plan Coverage</h1>
+      <div className="card">
+        <div className="card-title">Import Savings Coverage</div>
+        <p style={{ fontSize: 13, color: 'var(--muted)', margin: '0 0 12px' }}>
+          Upload the CloudHealth "Savings" export (.csv) monthly to keep EC2 Savings Plan / RI / Spot
+          coverage percentages accurate — these can't be derived from CostHistory mid-month.
+        </p>
+
+        {customerId && (
+          <div style={{ fontSize: 13, color: savingsCoverage ? 'var(--blue, #3b82f6)' : 'var(--muted)', marginBottom: 12 }}>
+            {savingsCoverage
+              ? `Last imported ${new Date(savingsCoverage.importedAt).toLocaleString()} — ` +
+                `most recent coverage (${savingsCoverage.month}): ` +
+                `${savingsCoverage.ec2SpCoveragePct != null ? `${savingsCoverage.ec2SpCoveragePct.toFixed(1)}% SP` : 'N/A'}`
+              : 'No savings coverage imported yet for this customer'}
+          </div>
+        )}
+
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+          <input
+            ref={savingsInputRef}
+            type="file"
+            accept=".csv"
+            onChange={e => setSavingsFile(e.target.files?.[0] ?? null)}
+          />
+          <button
+            className="btn btn-primary"
+            onClick={importSavingsCoverageFile}
+            disabled={!customerId || !savingsFile || savingsImporting}
+          >
+            {savingsImporting ? <><span className="spinner" /> Importing…</> : 'Import Savings Coverage'}
+          </button>
+        </div>
+
+        {savingsError && <div className="alert alert-error" style={{ marginTop: 12 }}>{savingsError}</div>}
+
+        {savingsResult && (
+          <div className="alert" style={{ marginTop: 12, background: 'var(--bg)', border: '1px solid var(--border)' }}>
+            Imported {savingsResult.monthsImported} month{savingsResult.monthsImported !== 1 ? 's' : ''}{' '}
+            of coverage data — last imported {new Date(savingsResult.importedAt).toLocaleString()}
           </div>
         )}
       </div>

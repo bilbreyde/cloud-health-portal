@@ -376,6 +376,16 @@ function MarketplaceSection({ customerId }: { customerId: string }) {
       .catch(e => setError(e instanceof Error ? e.message : String(e)))
   }, [customerId])
 
+  // Client-side routing doesn't trigger the browser's native hash-scroll, so a
+  // "View all" link from Dashboard (/spend-insights#marketplace-section) needs
+  // an explicit scroll once this section has actually rendered.
+  useEffect(() => {
+    if (purchases === null || purchases.length === 0) return
+    if (window.location.hash === '#marketplace-section') {
+      document.getElementById('marketplace-section')?.scrollIntoView({ block: 'start' })
+    }
+  }, [purchases])
+
   if (error) return null
   if (purchases !== null && purchases.length === 0) return null
 
@@ -403,7 +413,7 @@ function MarketplaceSection({ customerId }: { customerId: string }) {
 
   return (
     <>
-      <h2 style={{ fontSize: 13, fontWeight: 700, letterSpacing: '.5px', textTransform: 'uppercase', color: 'var(--muted)', margin: '4px 0 12px' }}>
+      <h2 id="marketplace-section" style={{ fontSize: 13, fontWeight: 700, letterSpacing: '.5px', textTransform: 'uppercase', color: 'var(--muted)', margin: '4px 0 12px' }}>
         Software Licensing
       </h2>
       <div className="card">

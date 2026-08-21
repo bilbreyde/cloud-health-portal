@@ -260,7 +260,30 @@ export interface CostTopService {
 export interface SavingsPlanCoverage {
   covered: number
   onDemand: number
-  coveragePct: number
+  // Sourced from the imported CloudHealth Savings CSV, not derived from
+  // CostHistory negation credits (those are $0 until month-end true-up). null
+  // means nothing has been imported yet for this customer.
+  coveragePct: number | null
+  sourceMonth: string | null
+  importedAt: string | null
+}
+
+export interface SavingsCoverageRecord {
+  month: string
+  ec2SpCoveragePct: number | null
+  ec2RiCoveragePct: number | null
+  ec2SpotCoveragePct: number | null
+  importedAt: string
+  requestedMonth?: string
+  isFallback?: boolean
+}
+
+export interface SavingsCoverageImportResult {
+  success: boolean
+  monthsImported: number
+  fileName: string
+  importedAt: string
+  error?: string
 }
 
 export interface CostHistorySummary {

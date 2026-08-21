@@ -298,7 +298,9 @@ export default function ReportBuilder() {
                 />
                 <FlowStat
                   label="Savings Plan Coverage"
-                  value={`${report.costSummary.savingsPlanCoverage.coveragePct.toFixed(1)}%`}
+                  value={report.costSummary.savingsPlanCoverage.coveragePct != null
+                    ? `${report.costSummary.savingsPlanCoverage.coveragePct.toFixed(1)}%`
+                    : 'N/A'}
                   accent="var(--blue)"
                 />
               </div>
