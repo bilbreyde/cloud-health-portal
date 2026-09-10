@@ -9,7 +9,7 @@ import statistics
 from datetime import date
 from typing import Optional
 
-from .cost_classifier import classify_service, compute_edp_utilization
+from .cost_classifier import classify_edp_status, classify_service, compute_edp_utilization
 from .cost_classifier import priority_rank as classifier_priority_rank
 from .cost_classifier import project_amount as classify_project_amount
 
@@ -111,7 +111,8 @@ def compute_anomalies(
     is_partial: bool = False,
     completion_ratio: float = 1.0,
 ) -> list:
-    """One entry per flagged service: commitment_risk > new_service > statistical_anomaly > spike.
+    """One entry per flagged service: commitment_risk > new_service > new_service_growth
+    > statistical_anomaly > spike.
 
     Every service is classified first (shared.cost_classifier): a one-time/excluded
     charge (Amazon Marketplace, Enterprise Support, …) is never projected — a one-time
@@ -120,6 +121,13 @@ def compute_anomalies(
     "alert_if_growing" services (unused Savings Plan capacity) are flagged the instant
     they're non-zero, bypassing the statistical checks entirely — any unused committed
     capacity is worth surfacing immediately, not just when it's statistically unusual.
+
+    The rolling baseline for statistical_anomaly only ever counts ACTIVE (amount > 0)
+    prior months — a $0/missing month means the service wasn't billed yet, not that it
+    cost nothing, and including it would deflate the average and manufacture a false
+    anomaly. Exactly one active prior month is flagged as new_service_growth instead
+    (too little history for a standard deviation); zero active prior months is the
+    pre-existing new_service case.
     """
     if len(months_in_window) < 2:
         return []
@@ -166,17 +174,37 @@ def compute_anomalies(
             ))
             continue
 
-        rolling_window = prior_vals[-3:] if len(prior_vals) >= 3 else prior_vals
-        if len(rolling_window) >= 2:
-            avg = statistics.mean(rolling_window)
-            stdev = statistics.stdev(rolling_window)
+        # Rolling baseline uses only ACTIVE (amount > 0) prior months — a $0/missing
+        # month means the service wasn't billed yet (not imported, or didn't exist),
+        # not that it genuinely cost nothing. Folding it into the average deflates it
+        # and manufactures a false "anomaly" the moment real charges start showing up.
+        active_prior_vals = [v for v in prior_vals if v > 0]
+
+        if len(active_prior_vals) == 1:
+            # Exactly one real data point isn't enough to compute a standard deviation
+            # against — flag it as new/growing service history, not a statistical outlier.
+            anomalies.append(_build_anomaly(
+                service, current, active_prior_vals[0], None, 'new_service_growth', classification, was_projected,
+                explanation=(
+                    f'{service} has only one prior month of billing history '
+                    f'({_fmt(active_prior_vals[0])}) and now shows {_fmt(current)}{tag} — '
+                    f'too little history yet for a statistical baseline.'
+                ),
+            ))
+            continue
+
+        if len(active_prior_vals) >= 2:
+            recent = active_prior_vals[-3:]
+            avg = statistics.mean(recent)
+            stdev = statistics.stdev(recent)
             threshold = avg + 2 * stdev
             if stdev > 0 and current > threshold:
                 anomalies.append(_build_anomaly(
                     service, current, avg, stdev, 'statistical_anomaly', classification, was_projected,
                     explanation=(
                         f'{service} is {_fmt(current)}{tag} this month, above its rolling average of '
-                        f'{_fmt(avg)} plus two standard deviations ({_fmt(threshold)}).'
+                        f'{_fmt(avg)} (from the last {len(recent)} active month'
+                        f'{"s" if len(recent) != 1 else ""}) plus two standard deviations ({_fmt(threshold)}).'
                     ),
                 ))
                 continue
@@ -585,6 +613,7 @@ def compute_commitment_utilization(
     complete_months = [m for m in months_in_window if not (is_partial and m == current_month)]
     last_3_complete = complete_months[-3:]
     trailing_3mo_avg = None
+    trailing_utilization_pct = None
     under_utilization_risk = False
     over_committed = False
     if len(last_3_complete) >= 2 and monthly_obligation:
@@ -593,6 +622,19 @@ def compute_commitment_utilization(
         trailing_utilization_pct = trailing_3mo_avg / monthly_obligation * 100
         under_utilization_risk = trailing_utilization_pct < 85
         over_committed = trailing_utilization_pct > _EDP_OVER_COMMITTED_RATIO * 100
+
+    # Renewal-risk status is driven by the TRAILING complete-month average, never by
+    # the current month alone — a partial month's naturally-low to-date utilization
+    # (e.g. 10 of 30 days billed) would otherwise read as "at risk for renewal" even
+    # when trailing complete months are well above the obligation. Falls back to the
+    # current month's own status only when there isn't enough complete-month history
+    # yet to compute a trailing average (e.g. the first month or two of tracking).
+    if trailing_utilization_pct is not None:
+        status, status_label, status_color, on_track = classify_edp_status(trailing_utilization_pct)
+    else:
+        status, status_label, status_color, on_track = (
+            edp['status'], edp['status_label'], edp['status_color'], edp['on_track'],
+        )
 
     end_date = commitment.get('commitmentEndDate')
     months_remaining = months_between(end_date, current_month) if end_date else None
@@ -611,12 +653,13 @@ def compute_commitment_utilization(
         'creditsApplied': round(edp['credits_applied'], 2),
         'suppressedPartialMonth': round(edp['suppressed_partial_month'], 2),
         'utilizationPct': round(edp['utilization_pct'], 1),
-        'status': edp['status'],
-        'statusLabel': edp['status_label'],
-        'statusColor': edp['status_color'],
-        'onTrack': edp['on_track'],
+        'status': status,
+        'statusLabel': status_label,
+        'statusColor': status_color,
+        'onTrack': on_track,
         'overUnderAmount': round(edp['net_toward_edp'] - monthly_obligation, 2) if monthly_obligation else None,
         'trailing3MoAvg': trailing_3mo_avg,
+        'trailingUtilizationPct': round(trailing_utilization_pct, 1) if trailing_utilization_pct is not None else None,
         'underUtilizationRisk': under_utilization_risk,
         'overCommitted': over_committed,
         'monthsRemaining': months_remaining,

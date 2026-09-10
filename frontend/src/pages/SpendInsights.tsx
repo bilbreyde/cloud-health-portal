@@ -46,6 +46,7 @@ function anomalyPresentation(a: SpendAnomaly): { color: ClassifierColor; badgeLa
   if (a.flagType === 'Unknown Workload') return { color: 'yellow', badgeLabel: 'VERIFY USE CASE' }
   if (a.flagType === 'Architecture Review') return { color: 'purple', badgeLabel: 'REVIEW RECOMMENDED' }
   if (a.pattern === 'one_time') return { color: 'blue', badgeLabel: 'ONE-TIME' }
+  if (a.type === 'new_service_growth') return { color: 'yellow', badgeLabel: 'NEW SERVICE GROWTH' }
   if (a.type === 'statistical_anomaly' && a.pattern === 'recurring') return { color: 'orange', badgeLabel: 'STATISTICAL ANOMALY' }
   return { color: a.color, badgeLabel: (a.flagType || a.type.replace('_', ' ')).toUpperCase() }
 }
@@ -252,13 +253,21 @@ function BurnSummaryCard({ insights }: { insights: SpendInsightsResponse }) {
               <td>{fmtMoney(cu.monthlyObligation)}</td>
             </tr>
             <tr>
-              <td style={{ fontWeight: 600 }}>Net Spend Toward EDP {cu.isPartial ? '(proj.)' : ''}</td>
-              <td>
-                {fmtMoney(cu.netTowardEdp)}{' '}
-                {cu.utilizationPct !== null && (
-                  <span style={{ color: utilizationColor(cu.utilizationPct), fontWeight: 700 }}>
-                    {cu.utilizationPct.toFixed(1)}%
+              <td style={{ fontWeight: 600 }}>
+                This month {cu.isPartial ? '(proj.)' : ''}
+                {cu.isPartial && (
+                  <span
+                    title="Partial month — excludes any Marketplace purchases not yet billed this period"
+                    style={{ cursor: 'help', marginLeft: 4, opacity: .7 }}
+                  >
+                    ⓘ
                   </span>
+                )}
+              </td>
+              <td>
+                {fmtMoney(cu.netTowardEdp)}
+                {cu.utilizationPct !== null && (
+                  <span style={{ color: 'var(--muted)', fontWeight: 600 }}> — {cu.utilizationPct.toFixed(1)}%</span>
                 )}
               </td>
             </tr>
@@ -279,9 +288,20 @@ function BurnSummaryCard({ insights }: { insights: SpendInsightsResponse }) {
               <td style={{ color: 'var(--green)' }}>−{fmtMoney(cu.creditsApplied)}</td>
             </tr>
             <tr>
-              <td style={{ fontWeight: 600 }}>Status</td>
+              <td style={{ fontWeight: 600 }}>3-month trailing avg</td>
               <td>
-                <span className={`badge ${EDP_STATUS_BADGE_CLS[cu.status]}`}>{cu.statusLabel.toUpperCase()}</span>
+                {cu.trailing3MoAvg !== null ? (
+                  <>
+                    {fmtMoney(cu.trailing3MoAvg)}
+                    {cu.trailingUtilizationPct !== null && (
+                      <span style={{ color: 'var(--muted)', fontWeight: 600 }}> — {cu.trailingUtilizationPct.toFixed(1)}%</span>
+                    )}
+                    {' '}
+                    <span className={`badge ${EDP_STATUS_BADGE_CLS[cu.status]}`}>{cu.statusLabel.toUpperCase()}</span>
+                  </>
+                ) : (
+                  <span style={{ color: 'var(--muted)' }}>Not enough complete-month history yet</span>
+                )}
               </td>
             </tr>
           </tbody>

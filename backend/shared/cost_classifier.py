@@ -383,17 +383,7 @@ def compute_edp_utilization(services_data: list, monthly_obligation: float, is_p
 
     net_toward_edp = total_billed  # credit-pattern lines were never added, so already net
     utilization_pct = (net_toward_edp / monthly_obligation * 100) if monthly_obligation > 0 else 0
-
-    # <85%: At Risk · 85-95%: Watch · 95-110%: On Track · >110%: Over-Committed (still
-    # healthy for an EDP — it just means more than the obligation was consumed).
-    if utilization_pct < 85:
-        status, status_label, status_color = 'at_risk', 'At Risk for Renewal', 'red'
-    elif utilization_pct < 95:
-        status, status_label, status_color = 'watch', 'Watch — Below Target', 'yellow'
-    elif utilization_pct <= 110:
-        status, status_label, status_color = 'on_track', 'On Track', 'green'
-    else:
-        status, status_label, status_color = 'over_committed', 'Over Committed — Strong Renewal Position', 'green'
+    status, status_label, status_color, on_track = classify_edp_status(utilization_pct)
 
     return {
         'net_toward_edp': net_toward_edp,
@@ -407,8 +397,30 @@ def compute_edp_utilization(services_data: list, monthly_obligation: float, is_p
         'status': status,
         'status_label': status_label,
         'status_color': status_color,
-        'on_track': status in ('on_track', 'over_committed'),
+        'on_track': on_track,
     }
+
+
+def classify_edp_status(utilization_pct: float) -> tuple:
+    """(status, status_label, status_color, on_track) from a utilization percentage.
+
+    <85%: At Risk · 85-95%: Watch · 95-110%: On Track · >110%: Over-Committed (still
+    healthy for an EDP — it just means more than the obligation was consumed).
+
+    Pulled out of compute_edp_utilization so the same thresholds can classify a
+    TRAILING multi-month average, not just a single month's figure — a partial
+    current month's low to-date utilization should never by itself read as "at
+    risk for renewal" when trailing complete months are well above obligation.
+    """
+    if utilization_pct < 85:
+        status, status_label, status_color = 'at_risk', 'At Risk for Renewal', 'red'
+    elif utilization_pct < 95:
+        status, status_label, status_color = 'watch', 'Watch — Below Target', 'yellow'
+    elif utilization_pct <= 110:
+        status, status_label, status_color = 'on_track', 'On Track', 'green'
+    else:
+        status, status_label, status_color = 'over_committed', 'Over Committed — Strong Renewal Position', 'green'
+    return status, status_label, status_color, status in ('on_track', 'over_committed')
 
 
 def get_service_amount(services_data: list, name: str) -> float:

@@ -408,7 +408,7 @@ export interface Report {
   extractedData?: ExtractedReportData
 }
 
-export type AnomalyType = 'new_service' | 'statistical_anomaly' | 'spike' | 'commitment_risk'
+export type AnomalyType = 'new_service' | 'new_service_growth' | 'statistical_anomaly' | 'spike' | 'commitment_risk'
 export type ChargePattern = 'one_time' | 'recurring' | 'credit' | 'mixed' | 'support_fee' | 'variable_adjustment'
 export type ClassifierColor = 'blue' | 'yellow' | 'orange' | 'red' | 'purple' | 'gray' | 'green'
 
@@ -485,6 +485,11 @@ export interface SpendCommitmentUtilization {
   onTrack: boolean
   overUnderAmount: number | null
   trailing3MoAvg: number | null
+  // Drives status/statusLabel/statusColor/onTrack above — never utilizationPct
+  // (the current month alone), so a partial month's naturally-low to-date figure
+  // can't by itself read as "at risk for renewal". null only when there isn't yet
+  // enough complete-month history (2+) to compute a trailing average.
+  trailingUtilizationPct: number | null
   underUtilizationRisk: boolean
   overCommitted: boolean
   monthsRemaining: number | null
