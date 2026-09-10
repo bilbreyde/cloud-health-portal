@@ -11,6 +11,7 @@ from docx.oxml.ns import qn
 from docx.shared import Inches, Pt, RGBColor
 
 from shared import blob_client, cosmos_client
+from shared.exception_tracker_engine import reconcile
 from shared.response_helpers import cors_options, cors_response
 from shared.spend_insights_engine import (
     compute_anomalies,
@@ -157,6 +158,8 @@ def _build_docx(
     project_updates: list,
     progress_narrative: str,
     joel_notes: str,
+    exception_progress: dict | None,
+    exception_progress_narrative: str,
 ) -> bytes:
     doc = Document()
 
@@ -569,6 +572,66 @@ def _build_docx(
             f'excluded from optimization scope. The net addressable opportunity is {_fmt(net_addressable)}.'
         )
     _multiline(doc, exc_text)
+    _para(doc)
+
+    _h2(doc, '9.4 Exception Optimization Progress')
+    if exception_progress:
+        summ = exception_progress['summary']
+        _para(
+            doc,
+            f"As of the {exception_progress['snapshotDate']} inventory snapshot, "
+            f"{summ['terminated']} of {summ['total']} exception instances have been terminated "
+            f"(saving {_fmt(summ['terminatedMonthlySavings'])}/month) and {summ['rightsized']} have been "
+            f"rightsized (est. {_fmt(summ['rightsizedMonthlySavings'])}/month) — a combined "
+            f"{_fmt(summ['totalRealizedSavings'])}/month realized.",
+            space_after=8,
+        )
+
+        tbl_ep = doc.add_table(rows=1, cols=2)
+        tbl_ep.style = 'Table Grid'
+        _tbl_header(tbl_ep, ['Category', 'Instances / Monthly Impact'])
+        _tbl_row(tbl_ep, ['Terminated', f"{summ['terminated']} instances — {_fmt(summ['terminatedMonthlySavings'])}/mo saved"])
+        _tbl_row(tbl_ep, ['Rightsized', f"{summ['rightsized']} instances — {_fmt(summ['rightsizedMonthlySavings'])}/mo est. savings"])
+        _tbl_row(tbl_ep, ['Unchanged', f"{summ['activeUnchanged']} instances — {_fmt(summ['activeUnchangedMonthlyCost'])}/mo still in exceptions"])
+        _tbl_row(tbl_ep, ['Total Realized Savings', f"{_fmt(summ['totalRealizedSavings'])}/mo"])
+        _para(doc)
+
+        top_terminated = sorted(exception_progress['terminated'], key=lambda r: -r['originalMonthlyCost'])[:10]
+        if top_terminated:
+            _h2(doc, 'Top 10 Terminated Instances by Monthly Cost')
+            tbl_term = doc.add_table(rows=1, cols=3)
+            tbl_term.style = 'Table Grid'
+            _tbl_header(tbl_term, ['Instance Name', 'Original Type', 'Monthly Cost'])
+            for r in top_terminated:
+                _tbl_row(tbl_term, [r['instanceName'] or r['instanceId'], r['originalType'] or '—', _fmt(r['originalMonthlyCost'])])
+            _para(doc)
+
+        rightsized_rows = exception_progress['rightsized']
+        if rightsized_rows:
+            _h2(doc, 'Rightsized Instances')
+            tbl_rs = doc.add_table(rows=1, cols=4)
+            tbl_rs.style = 'Table Grid'
+            _tbl_header(tbl_rs, ['Instance Name', 'Original → Current', 'Direction', 'Est. Savings'])
+            for r in rightsized_rows:
+                savings_str = _fmt(r['estimatedSavings']) if r['estimatedSavings'] is not None else 'Est. N/A'
+                _tbl_row(tbl_rs, [
+                    r['instanceName'] or r['instanceId'],
+                    f"{r['originalType']} → {r['currentType']}",
+                    'Downsize' if r['direction'] == 'downsize' else 'Upsize',
+                    savings_str,
+                ])
+            _para(doc, 'Upsized instances may reflect intentional capacity additions — verify with the '
+                       'app owner before flagging as a regression.', size=9, color=_GREY)
+            _para(doc)
+
+        _para(doc,
+              f"Unchanged exceptions represent {_fmt(summ['activeUnchangedMonthlyCost'])}/month of "
+              f"addressable opportunity pending business review.")
+
+        if exception_progress_narrative:
+            _multiline(doc, exception_progress_narrative)
+    else:
+        _para(doc, 'No inventory reconciliation has been run for this customer yet.')
     doc.add_page_break()
 
     # ── Section 10: Risks & Constraints ────────────────────────────────────────
@@ -823,6 +886,19 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
     except Exception as exc:
         logging.warning('Spend insights fetch failed (non-fatal): %s', exc)
 
+    # ── Exception optimization progress (most recent inventory reconciliation) ──
+    exception_progress = None
+    exception_progress_narrative = ''
+    try:
+        snapshots = cosmos_client.list_inventory_snapshots(customer_id)
+        if snapshots:
+            exception_progress = reconcile(customer_id, snapshots[0].snapshotDate)
+        generated_report = locals().get('generated')
+        if generated_report and generated_report.extractedData:
+            exception_progress_narrative = generated_report.extractedData.get('exceptionProgressNarrative', '') or ''
+    except Exception as exc:
+        logging.warning('Exception progress reconciliation failed (non-fatal): %s', exc)
+
     exc_floor = exc_summary['totalMonthlyCost'] if exc_summary else 0.0
     total_signal = sum(curr_data.values())
     net_addressable = max(0.0, total_signal - exc_floor)
@@ -858,6 +934,8 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
             project_updates=project_updates,
             progress_narrative=progress_narrative,
             joel_notes=joel_notes,
+            exception_progress=exception_progress,
+            exception_progress_narrative=exception_progress_narrative,
         )
     except Exception as exc:
         logging.exception('docx build failed')

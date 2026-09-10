@@ -163,6 +163,75 @@ export interface ExceptionRecord {
   updatedAt: string
 }
 
+export interface InventorySnapshot {
+  snapshotDate: string
+  fileName: string
+  instanceCount: number
+  importedAt: string
+}
+
+export interface InventoryImportResult {
+  success: boolean
+  snapshotDate: string
+  instanceCount: number
+}
+
+export interface TerminatedInstance {
+  instanceId: string
+  instanceName: string
+  accountName: string
+  lifecycle: string
+  product: string
+  originalType: string
+  originalMonthlyCost: number
+  appOwner: string
+  notes: string
+}
+
+export type RightsizeDirection = 'downsize' | 'upsize'
+
+export interface RightsizedInstance {
+  instanceId: string
+  instanceName: string
+  accountName: string
+  lifecycle: string
+  originalType: string
+  currentType: string
+  originalMonthlyCost: number
+  direction: RightsizeDirection
+  estimatedSavings: number | null
+}
+
+export interface UnchangedInstance {
+  instanceId: string
+  instanceName: string
+  accountName: string
+  lifecycle: string
+  product: string
+  apiName: string
+  monthlyCost: number
+  appOwner: string
+}
+
+export interface ReconciliationSummary {
+  total: number
+  terminated: number
+  rightsized: number
+  activeUnchanged: number
+  terminatedMonthlySavings: number
+  rightsizedMonthlySavings: number
+  activeUnchangedMonthlyCost: number
+  totalRealizedSavings: number
+}
+
+export interface ReconciliationReport {
+  snapshotDate: string
+  summary: ReconciliationSummary
+  terminated: TerminatedInstance[]
+  rightsized: RightsizedInstance[]
+  activeUnchanged: UnchangedInstance[]
+}
+
 export interface ExceptionSummary {
   totalCount: number
   totalMonthlyCost: number

@@ -389,6 +389,92 @@ class SavingsCoverage:
 
 
 @dataclass
+class InventorySnapshot:
+    id: str
+    customerId: str
+    snapshotDate: str        # YYYY-MM-DD
+    fileName: str
+    instanceCount: int
+    importedAt: datetime
+
+    def to_dict(self) -> dict:
+        return {
+            'id': self.id,
+            'customerId': self.customerId,
+            'snapshotDate': self.snapshotDate,
+            'fileName': self.fileName,
+            'instanceCount': self.instanceCount,
+            'importedAt': self.importedAt.isoformat(),
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> 'InventorySnapshot':
+        return cls(
+            id=d['id'],
+            customerId=d['customerId'],
+            snapshotDate=d.get('snapshotDate', ''),
+            fileName=d.get('fileName', ''),
+            instanceCount=int(d.get('instanceCount', 0)),
+            importedAt=datetime.fromisoformat(d['importedAt']),
+        )
+
+
+@dataclass
+class InventoryInstance:
+    id: str
+    customerId: str
+    snapshotDate: str        # YYYY-MM-DD
+    instanceId: str
+    instanceName: str
+    accountName: str
+    apiName: str
+    product: str
+    tenancy: str
+    zoneName: str
+    attachedEbs: str
+    projectedCostForMonth: float
+    launchedBy: str
+    ownerEmail: str
+
+    def to_dict(self) -> dict:
+        return {
+            'id': self.id,
+            'customerId': self.customerId,
+            'snapshotDate': self.snapshotDate,
+            'instanceId': self.instanceId,
+            'instanceName': self.instanceName,
+            'accountName': self.accountName,
+            'apiName': self.apiName,
+            'product': self.product,
+            'tenancy': self.tenancy,
+            'zoneName': self.zoneName,
+            'attachedEbs': self.attachedEbs,
+            'projectedCostForMonth': self.projectedCostForMonth,
+            'launchedBy': self.launchedBy,
+            'ownerEmail': self.ownerEmail,
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> 'InventoryInstance':
+        return cls(
+            id=d['id'],
+            customerId=d['customerId'],
+            snapshotDate=d.get('snapshotDate', ''),
+            instanceId=d.get('instanceId', ''),
+            instanceName=d.get('instanceName', ''),
+            accountName=d.get('accountName', ''),
+            apiName=d.get('apiName', ''),
+            product=d.get('product', ''),
+            tenancy=d.get('tenancy', ''),
+            zoneName=d.get('zoneName', ''),
+            attachedEbs=d.get('attachedEbs', ''),
+            projectedCostForMonth=float(d.get('projectedCostForMonth', 0.0)),
+            launchedBy=d.get('launchedBy', ''),
+            ownerEmail=d.get('ownerEmail', ''),
+        )
+
+
+@dataclass
 class Template:
     id: str
     customerId: str

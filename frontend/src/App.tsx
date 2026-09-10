@@ -4,6 +4,7 @@ import { createCustomer } from './api'
 import CustomerSettingsModal from './components/CustomerSettingsModal'
 import { useCustomer } from './context/CustomerContext'
 import Dashboard from './pages/Dashboard'
+import ExceptionTracker from './pages/ExceptionTracker'
 import Exceptions from './pages/Exceptions'
 import History from './pages/History'
 import ReportBuilder from './pages/ReportBuilder'
@@ -223,6 +224,9 @@ function NavBar() {
       <NavLink to="/history" className={({ isActive }) => 'nav-link' + (isActive ? ' active' : '')}>
         History
       </NavLink>
+      <NavLink to="/exception-tracker" className={({ isActive }) => 'nav-link' + (isActive ? ' active' : '')}>
+        Progress Tracker
+      </NavLink>
       <NavLink to="/uploads" className={({ isActive }) => 'nav-link' + (isActive ? ' active' : '')}>
         Manage Uploads
       </NavLink>
@@ -246,6 +250,7 @@ export default function App() {
         <Route path="/spend-insights" element={<SpendInsights />} />
         <Route path="/report" element={<ReportBuilder />} />
         <Route path="/history" element={<History />} />
+        <Route path="/exception-tracker" element={<ExceptionTracker />} />
         <Route path="/uploads" element={<Uploads />} />
         <Route path="/exceptions" element={<Exceptions />} />
       </Routes>

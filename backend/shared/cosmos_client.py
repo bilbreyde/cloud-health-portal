@@ -6,7 +6,7 @@ from typing import Optional
 
 from azure.cosmos import CosmosClient, PartitionKey, exceptions
 
-from .models import CostHistoryRecord, Customer, ExceptionRecord, MarketplacePurchase, Report, SavingsCoverage, Template, TrendData, Upload
+from .models import CostHistoryRecord, Customer, ExceptionRecord, InventoryInstance, InventorySnapshot, MarketplacePurchase, Report, SavingsCoverage, Template, TrendData, Upload
 from .cost_classifier import classify_charge_bucket, classify_service, should_suppress_for_partial_month
 from .cost_classifier import project_amount as classify_project_amount
 from .spend_insights_engine import is_partial_month, project_amount
@@ -28,6 +28,8 @@ _CONTAINERS = {
     "cost_history": "/customerId",
     "marketplace_purchases": "/customerId",
     "savings_coverage": "/customerId",
+    "inventory_snapshots": "/customerId",
+    "inventory_instances": "/customerId",
 }
 
 # customers container is special — the customer IS the partition, so we store
@@ -909,3 +911,113 @@ def get_savings_coverage_with_fallback(customer_id: str, month: str) -> Optional
         return exact
     all_records = list_savings_coverage(customer_id)
     return all_records[0] if all_records else None
+
+
+# ── inventory_snapshots / inventory_instances ───────────────────────────────
+
+def _inventory_snapshot_id(customer_id: str, snapshot_date: str) -> str:
+    # Deterministic — at most one snapshot record per (customer, date); re-importing
+    # the same date's inventory export overwrites rather than duplicates.
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, f'inventory-snapshot:{customer_id}:{snapshot_date}'))
+
+
+def upsert_inventory_snapshot(
+    customer_id: str, snapshot_date: str, file_name: str, instance_count: int,
+    imported_at: Optional[datetime] = None,
+) -> InventorySnapshot:
+    _ensure_container('inventory_snapshots')
+    container = _get_container('inventory_snapshots')
+    record = InventorySnapshot(
+        id=_inventory_snapshot_id(customer_id, snapshot_date),
+        customerId=customer_id,
+        snapshotDate=snapshot_date,
+        fileName=file_name,
+        instanceCount=instance_count,
+        importedAt=imported_at or datetime.now(timezone.utc),
+    )
+    container.upsert_item(record.to_dict())
+    return record
+
+
+def list_inventory_snapshots(customer_id: str) -> list[InventorySnapshot]:
+    _ensure_container('inventory_snapshots')
+    container = _get_container('inventory_snapshots')
+    items = container.query_items(
+        query='SELECT * FROM c WHERE c.customerId = @customerId',
+        parameters=[{'name': '@customerId', 'value': customer_id}],
+        partition_key=customer_id,
+    )
+    results = [InventorySnapshot.from_dict(i) for i in items]
+    return sorted(results, key=lambda r: r.snapshotDate, reverse=True)
+
+
+def delete_inventory_instances_for_snapshot(customer_id: str, snapshot_date: str) -> int:
+    """Delete any previously imported instances for this (customer, date) before a
+    re-import, so a corrected re-upload fully replaces rather than merges with the
+    stale set (an instance dropped from the corrected CSV must not linger)."""
+    _ensure_container('inventory_instances')
+    container = _get_container('inventory_instances')
+    existing = list_inventory_instances(customer_id, snapshot_date)
+    ids = [r.id for r in existing]
+    for i in range(0, len(ids), _BATCH_LIMIT):
+        chunk = ids[i:i + _BATCH_LIMIT]
+        batch_ops = [('delete', (doc_id,)) for doc_id in chunk]
+        container.execute_item_batch(batch_ops, partition_key=customer_id)
+    return len(ids)
+
+
+def upsert_inventory_instances_bulk(
+    customer_id: str, snapshot_date: str, records: list,
+) -> list[InventoryInstance]:
+    """Bulk-write InventoryInstance rows for one (customer, snapshotDate) import.
+
+    `records` is a list of dicts with InventoryInstance field names (minus id/
+    customerId/snapshotDate). Uses Cosmos transactional batches — same rationale
+    as upsert_cost_history_bulk — since an aws_instances export can run to
+    thousands of rows.
+    """
+    _ensure_container('inventory_instances')
+    container = _get_container('inventory_instances')
+
+    built: list[InventoryInstance] = []
+    for rec in records:
+        doc_id = str(uuid.uuid5(
+            uuid.NAMESPACE_URL, f"inventory-instance:{customer_id}:{snapshot_date}:{rec['instanceId']}",
+        ))
+        built.append(InventoryInstance(
+            id=doc_id,
+            customerId=customer_id,
+            snapshotDate=snapshot_date,
+            instanceId=rec['instanceId'],
+            instanceName=rec.get('instanceName', ''),
+            accountName=rec.get('accountName', ''),
+            apiName=rec.get('apiName', ''),
+            product=rec.get('product', ''),
+            tenancy=rec.get('tenancy', ''),
+            zoneName=rec.get('zoneName', ''),
+            attachedEbs=rec.get('attachedEbs', ''),
+            projectedCostForMonth=rec.get('projectedCostForMonth', 0.0),
+            launchedBy=rec.get('launchedBy', ''),
+            ownerEmail=rec.get('ownerEmail', ''),
+        ))
+
+    for i in range(0, len(built), _BATCH_LIMIT):
+        chunk = built[i:i + _BATCH_LIMIT]
+        batch_ops = [('upsert', (r.to_dict(),)) for r in chunk]
+        container.execute_item_batch(batch_ops, partition_key=customer_id)
+
+    return built
+
+
+def list_inventory_instances(customer_id: str, snapshot_date: str) -> list[InventoryInstance]:
+    _ensure_container('inventory_instances')
+    container = _get_container('inventory_instances')
+    items = container.query_items(
+        query='SELECT * FROM c WHERE c.customerId = @customerId AND c.snapshotDate = @snapshotDate',
+        parameters=[
+            {'name': '@customerId', 'value': customer_id},
+            {'name': '@snapshotDate', 'value': snapshot_date},
+        ],
+        partition_key=customer_id,
+    )
+    return [InventoryInstance.from_dict(i) for i in items]

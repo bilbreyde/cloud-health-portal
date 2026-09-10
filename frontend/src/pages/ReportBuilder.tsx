@@ -1,8 +1,11 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { buildReport, fetchSpendInsights, saveSpendInsightsToReport } from '../api'
+import {
+  buildReport, fetchInventorySnapshots, fetchReconciliation, fetchSpendInsights,
+  saveExceptionProgressNarrative, saveSpendInsightsToReport,
+} from '../api'
 import { useCustomer } from '../context/CustomerContext'
-import type { NarrativeDraft, ReportResponse, SpendInsightsResponse } from '../types'
+import type { NarrativeDraft, ReconciliationReport, ReportResponse, SpendInsightsResponse } from '../types'
 
 const MONTH_NAMES = ['January','February','March','April','May','June',
                      'July','August','September','October','November','December']
@@ -59,6 +62,12 @@ export default function ReportBuilder() {
   const [spendInsightsSaving, setSpendInsightsSaving]   = useState(false)
   const [spendInsightsSaveMsg, setSpendInsightsSaveMsg] = useState('')
 
+  const [exceptionProgress, setExceptionProgress]             = useState<ReconciliationReport | null>(null)
+  const [exceptionProgressLoading, setExceptionProgressLoading] = useState(false)
+  const [exceptionProgressDraft, setExceptionProgressDraft]     = useState('')
+  const [exceptionProgressSaving, setExceptionProgressSaving]   = useState(false)
+  const [exceptionProgressSaveMsg, setExceptionProgressSaveMsg] = useState('')
+
   useEffect(() => {
     if (!customerId) { setSpendInsights(null); return }
     const monthKey = `${year}-${String(month).padStart(2, '0')}`
@@ -68,6 +77,34 @@ export default function ReportBuilder() {
       .catch(() => setSpendInsights(null))
       .finally(() => setSpendInsightsLoading(false))
   }, [customerId, month, year])
+
+  useEffect(() => {
+    if (!customerId) { setExceptionProgress(null); return }
+    setExceptionProgressLoading(true)
+    fetchInventorySnapshots(customerId)
+      .then(snapshots => {
+        if (snapshots.length === 0) { setExceptionProgress(null); return null }
+        return fetchReconciliation(customerId, snapshots[0].snapshotDate)
+      })
+      .then(rep => { if (rep) setExceptionProgress(rep) })
+      .catch(() => setExceptionProgress(null))
+      .finally(() => setExceptionProgressLoading(false))
+  }, [customerId])
+
+  async function saveExceptionProgress() {
+    if (!customerId) return
+    setExceptionProgressSaving(true)
+    setExceptionProgressSaveMsg('')
+    try {
+      await saveExceptionProgressNarrative(customerId, month, year, exceptionProgressDraft)
+      setExceptionProgressSaveMsg('Saved to report')
+    } catch (e) {
+      setExceptionProgressSaveMsg(e instanceof Error ? e.message : String(e))
+    } finally {
+      setExceptionProgressSaving(false)
+      setTimeout(() => setExceptionProgressSaveMsg(''), 4000)
+    }
+  }
 
   async function saveSpendInsights() {
     if (!customerId || !spendInsights) return
@@ -278,6 +315,118 @@ export default function ReportBuilder() {
                 placeholder="Auto-generated when report is built…"
               />
             </div>
+          </div>
+
+          {/* Exception Progress section */}
+          <div className="card">
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+              <div className="card-title" style={{ margin: 0 }}>
+                Exception Progress <Link to="/exception-tracker" style={{ fontSize: 11, marginLeft: 8 }}>View full tracker →</Link>
+              </div>
+              {exceptionProgressLoading && <span className="spinner" style={{ borderTopColor: 'var(--blue)', width: 12, height: 12 }} />}
+            </div>
+
+            {!exceptionProgressLoading && !exceptionProgress && (
+              <p style={{ color: 'var(--muted)', fontSize: 13 }}>
+                No inventory reconciliation available yet.{' '}
+                <Link to="/exception-tracker">Import inventory and run reconciliation</Link> on the Progress Tracker page first.
+              </p>
+            )}
+
+            {exceptionProgress && (
+              <>
+                <div className="table-wrap" style={{ marginBottom: 14 }}>
+                  <table>
+                    <thead><tr><th>Category</th><th>Instances</th><th>Monthly Impact</th></tr></thead>
+                    <tbody>
+                      <tr>
+                        <td>Terminated</td>
+                        <td>{exceptionProgress.summary.terminated.toLocaleString()}</td>
+                        <td style={{ fontWeight: 600, color: 'var(--green)' }}>{fmtMoney(exceptionProgress.summary.terminatedMonthlySavings)}/mo saved</td>
+                      </tr>
+                      <tr>
+                        <td>Rightsized</td>
+                        <td>{exceptionProgress.summary.rightsized.toLocaleString()}</td>
+                        <td style={{ fontWeight: 600, color: 'var(--blue)' }}>{fmtMoney(exceptionProgress.summary.rightsizedMonthlySavings)}/mo est. savings</td>
+                      </tr>
+                      <tr>
+                        <td>Unchanged</td>
+                        <td>{exceptionProgress.summary.activeUnchanged.toLocaleString()}</td>
+                        <td style={{ color: 'var(--muted)' }}>{fmtMoney(exceptionProgress.summary.activeUnchangedMonthlyCost)}/mo remaining</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+
+                <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '.5px', marginBottom: 6 }}>
+                  Top 10 Terminated by Monthly Cost
+                </div>
+                <div className="table-wrap" style={{ marginBottom: 14 }}>
+                  <table>
+                    <thead><tr><th>Instance Name</th><th>Original Type</th><th>Monthly Cost</th></tr></thead>
+                    <tbody>
+                      {[...exceptionProgress.terminated].sort((a, b) => b.originalMonthlyCost - a.originalMonthlyCost).slice(0, 10).map(r => (
+                        <tr key={r.instanceId}>
+                          <td>{r.instanceName || r.instanceId}</td>
+                          <td style={{ fontSize: 12, color: 'var(--muted)' }}>{r.originalType || '—'}</td>
+                          <td>{fmtMoney(r.originalMonthlyCost)}</td>
+                        </tr>
+                      ))}
+                      {exceptionProgress.terminated.length === 0 && (
+                        <tr><td colSpan={3} style={{ textAlign: 'center', color: 'var(--muted)' }}>None</td></tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+
+                {exceptionProgress.rightsized.length > 0 && (
+                  <>
+                    <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '.5px', marginBottom: 6 }}>
+                      Rightsized Instances
+                    </div>
+                    <div className="table-wrap" style={{ marginBottom: 14 }}>
+                      <table>
+                        <thead><tr><th>Instance Name</th><th>Original → Current</th><th>Direction</th><th>Est. Savings</th></tr></thead>
+                        <tbody>
+                          {exceptionProgress.rightsized.map(r => (
+                            <tr key={r.instanceId}>
+                              <td>{r.instanceName || r.instanceId}</td>
+                              <td style={{ fontSize: 12 }}>{r.originalType} → {r.currentType}</td>
+                              <td>
+                                <span className={`badge ${r.direction === 'downsize' ? 'badge-green' : 'badge-gray'}`}>
+                                  {r.direction === 'downsize' ? 'Downsize ↓' : 'Upsize ↑'}
+                                </span>
+                              </td>
+                              <td>{r.estimatedSavings !== null ? fmtMoney(r.estimatedSavings) : 'Est. N/A'}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </>
+                )}
+
+                <div className="narrative-section" style={{ margin: 0 }}>
+                  <div className="narrative-label">Exception Progress Narrative</div>
+                  <textarea
+                    value={exceptionProgressDraft}
+                    onChange={e => setExceptionProgressDraft(e.target.value)}
+                    style={{ width: '100%', minHeight: 120 }}
+                    placeholder="Add narrative context on decommission and rightsizing progress…"
+                  />
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 10 }}>
+                  <button className="btn btn-secondary" onClick={saveExceptionProgress} disabled={exceptionProgressSaving}>
+                    {exceptionProgressSaving ? <><span className="spinner" /> Saving…</> : 'Save to Report'}
+                  </button>
+                  {exceptionProgressSaveMsg && (
+                    <span style={{ fontSize: 12, color: exceptionProgressSaveMsg === 'Saved to report' ? 'var(--green)' : 'var(--red)' }}>
+                      {exceptionProgressSaveMsg}
+                    </span>
+                  )}
+                </div>
+              </>
+            )}
           </div>
 
           {/* AWS Spend Overview section */}

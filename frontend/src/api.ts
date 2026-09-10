@@ -1,4 +1,4 @@
-import type { CommitmentContext, CostHistoryImportResult, CostHistorySummary, Customer, DashboardNarrativeResponse, ExceptionRecord, ExceptionSummary, ImportReportResponse, MarketplacePurchase, Report, ReportResponse, SavingsCoverageImportResult, SavingsCoverageRecord, SpendInsightsResponse, TrendsResponse, UploadRecord, UploadResult } from './types'
+import type { CommitmentContext, CostHistoryImportResult, CostHistorySummary, Customer, DashboardNarrativeResponse, ExceptionRecord, ExceptionSummary, ImportReportResponse, InventoryImportResult, InventorySnapshot, MarketplacePurchase, ReconciliationReport, Report, ReportResponse, SavingsCoverageImportResult, SavingsCoverageRecord, SpendInsightsResponse, TrendsResponse, UploadRecord, UploadResult } from './types'
 
 const BASE = (import.meta.env.VITE_API_URL ?? '') + '/api'
 
@@ -240,6 +240,36 @@ export function patchMarketplacePurchaseNote(
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ vendorNote }),
+  })
+}
+
+export function importInventory(customerId: string, formData: FormData): Promise<InventoryImportResult> {
+  return request<InventoryImportResult>(`${BASE}/exception-tracker/${customerId}/import-inventory`, {
+    method: 'POST',
+    body: formData,
+  })
+}
+
+export function fetchInventorySnapshots(customerId: string): Promise<InventorySnapshot[]> {
+  return request<InventorySnapshot[]>(`${BASE}/exception-tracker/${customerId}/snapshots`)
+}
+
+export function fetchReconciliation(customerId: string, snapshotDate: string): Promise<ReconciliationReport> {
+  return request<ReconciliationReport>(
+    `${BASE}/exception-tracker/${customerId}/reconcile?snapshotDate=${encodeURIComponent(snapshotDate)}`,
+  )
+}
+
+export function saveExceptionProgressNarrative(
+  customerId: string,
+  month: number,
+  year: number,
+  narrative: string,
+): Promise<{ success: boolean }> {
+  return request(`${BASE}/exception-tracker/${customerId}/narrative`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ month, year, narrative }),
   })
 }
 
