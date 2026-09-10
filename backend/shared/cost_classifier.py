@@ -37,6 +37,17 @@ CREDIT_SERVICES = [
     "AWS Partner Pricing Adjustment",  # can be negative
 ]
 
+# Charges billed as a single lump sum at month-end (or the start of the next month)
+# rather than accruing smoothly day by day — a days-elapsed ratio is meaningless for
+# these, since how much has posted so far depends on AWS's billing-cycle timing, not
+# how much of the calendar month has passed. project_amount() estimates them instead
+# from their historical share of total spend (see historical_pct/projected_total_spend
+# below), falling back to the unprojected actual when no historical baseline exists.
+END_OF_MONTH_CHARGES = [
+    "AWS Partner Pricing Adjustment",
+    "Enterprise Support",
+]
+
 RECURRING_SERVICES = [
     "Enterprise Support",
     "EC2 - Compute",
@@ -285,13 +296,33 @@ def classify_service(service_name: str) -> dict:
     }
 
 
-def project_amount(actual: float, service_name: str, completion_ratio: float) -> tuple:
+def project_amount(
+    actual: float,
+    service_name: str,
+    completion_ratio: float,
+    historical_pct: Optional[float] = None,
+    projected_total_spend: Optional[float] = None,
+) -> tuple:
     """
     Returns (projected_amount, was_projected).
     One-time / excluded charges return actual unchanged — a one-time $1.2M software
     purchase doesn't become $1.6M just because 74% of the month has elapsed.
-    Recurring charges return actual / completion_ratio.
+
+    End-of-month charges (see END_OF_MONTH_CHARGES) never use the days-elapsed ratio,
+    since they post as a lump sum whose timing within the month is arbitrary — a small
+    to-date actual early in the month is not "13% of the true total" the way a smoothly
+    accruing charge like EC2 usage is. When a historical baseline is available they're
+    instead estimated as historical_pct (this service's average share of total spend
+    over recent complete months) times projected_total_spend (this month's projected
+    baseline spend); without a baseline they fall back to the unprojected actual.
+
+    Every other recurring charge returns actual / completion_ratio, unchanged.
     """
+    if service_name in END_OF_MONTH_CHARGES:
+        if historical_pct is not None and projected_total_spend is not None:
+            return projected_total_spend * historical_pct, True
+        return actual, False
+
     classification = classify_service(service_name)
     if classification['exclude_from_projection']:
         return actual, False

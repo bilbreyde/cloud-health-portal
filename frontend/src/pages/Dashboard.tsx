@@ -221,8 +221,13 @@ function buildCostChartData(costData: CostHistorySummary) {
     row.Other = 0
     for (const s of infraServices) {
       const raw = s.months[month] ?? 0
+      // End-of-month lump-sum charges (Enterprise Support, AWS Partner Pricing
+      // Adjustment) never use the days-elapsed ratio — a small to-date amount early
+      // in the month isn't "X% of the true total" the way a smoothly-accruing charge
+      // is. Use the backend's historical-%-of-spend estimate for these instead.
+      const eomEstimate = isPartial ? costData.endOfMonthProjections[s.service] : undefined
       const shouldProject = isPartial && ratio > 0 && s.pattern !== 'one_time' && s.pattern !== 'credit'
-      const v = shouldProject ? raw / ratio : raw
+      const v = eomEstimate !== undefined ? eomEstimate : shouldProject ? raw / ratio : raw
       if (top.includes(s.service)) {
         row[s.service] = (row[s.service] as number) + v
       } else {

@@ -7,7 +7,7 @@ from typing import Optional
 from azure.cosmos import CosmosClient, PartitionKey, exceptions
 
 from .models import CostHistoryRecord, Customer, ExceptionRecord, InventoryInstance, InventorySnapshot, MarketplacePurchase, Report, SavingsCoverage, Template, TrendData, Upload
-from .cost_classifier import classify_charge_bucket, classify_service, should_suppress_for_partial_month
+from .cost_classifier import END_OF_MONTH_CHARGES, classify_charge_bucket, classify_service, should_suppress_for_partial_month
 from .cost_classifier import project_amount as classify_project_amount
 from .spend_insights_engine import is_partial_month, project_amount
 
@@ -563,6 +563,7 @@ def get_cost_history_summary(customer_id: str, months: list) -> dict:
         'savingsPlanCoverage': {'covered': 0.0, 'onDemand': 0.0, 'coveragePct': None, 'sourceMonth': None, 'importedAt': None},
         'computeCoverage': None,
         'infrastructureMom': None,
+        'endOfMonthProjections': {},
         'projectedCurrentMonth': 0.0,
         'isPartial': False,
         'completionRatio': 1.0,
@@ -685,14 +686,64 @@ def get_cost_history_summary(customer_id: str, months: list) -> dict:
             'billingAdjustments': billing_adjustments,
             'spTrueUp': sp_true_up,
             'supportFees': support_fees,
-            'projectedSupportFees': round(project_amount(support_fees, ratio), 2) if m_is_partial else support_fees,
+            # Patched below (post-loop) for the current partial month using the
+            # end-of-month historical-% method — placeholder until then.
+            'projectedSupportFees': support_fees,
             'variableAdjustments': variable_adjustments,
-            'projectedVariableAdjustments': round(project_amount(variable_adjustments, ratio), 2)
-                if m_is_partial else variable_adjustments,
+            'projectedVariableAdjustments': variable_adjustments,
             'totalBilled': total_billed,
             'netBilled': net_billed,
             'marketplacePurchases': marketplace_purchases,
         })
+
+    # ── end-of-month charge historical baseline ────────────────────────────────
+    # Enterprise Support / AWS Partner Pricing Adjustment (cost_classifier.
+    # END_OF_MONTH_CHARGES) post as a lump sum rather than accruing smoothly, so a
+    # days-elapsed ratio is unreliable for them (see project_amount). Instead,
+    # estimate each from its historical share of infrastructure spend — averaged
+    # over up to the 3 most recent COMPLETE months, never the current partial
+    # month itself — applied to this month's projected infrastructure spend.
+    monthly_totals_by_month = {m['month']: m for m in monthly_totals}
+    projected_baseline_spend = monthly_totals_by_month[current_month]['projectedInfrastructureSpend']
+    recent_complete_entries = [m for m in monthly_totals if not m['isPartial']][-3:]
+
+    end_of_month_pct: dict[str, float] = {}
+    for svc_name in END_OF_MONTH_CHARGES:
+        ratios = [
+            by_service_month.get(svc_name, {}).get(entry['month'], 0.0) / entry['infrastructureSpend']
+            for entry in recent_complete_entries if entry['infrastructureSpend'] > 0
+        ]
+        if ratios:
+            end_of_month_pct[svc_name] = sum(ratios) / len(ratios)
+
+    def _project_service(service: str, raw: float) -> float:
+        projected, _ = classify_project_amount(
+            raw, service, completion_ratio,
+            historical_pct=end_of_month_pct.get(service),
+            projected_total_spend=projected_baseline_spend,
+        )
+        return projected
+
+    # Per-service current-month estimates for the two named EOM charges, keyed by
+    # exact service name — lets the Dashboard's monthly spend chart show the
+    # historical-% estimate for these specific bars instead of re-deriving its own
+    # (unreliable, days-elapsed) projection client-side. Only ever set for the
+    # current month, and only while it's partial.
+    end_of_month_projections: dict[str, float] = {}
+
+    if is_partial:
+        current_entry = monthly_totals_by_month[current_month]
+        current_entry['projectedSupportFees'] = round(sum(
+            _project_service(svc, vals.get(current_month, 0.0))
+            for svc, vals in by_service_month.items() if classify_charge_bucket(svc) == 'support_fee'
+        ), 2)
+        current_entry['projectedVariableAdjustments'] = round(sum(
+            _project_service(svc, vals.get(current_month, 0.0))
+            for svc, vals in by_service_month.items() if classify_charge_bucket(svc) == 'variable_adjustment'
+        ), 2)
+        for svc_name in END_OF_MONTH_CHARGES:
+            raw = by_service_month.get(svc_name, {}).get(current_month, 0.0)
+            end_of_month_projections[svc_name] = round(_project_service(svc_name, raw), 2)
 
     # ── by-service breakdown + trend ───────────────────────────────────────────
     # Trend compares a service's most recent two data points; if the most recent one
@@ -708,7 +759,7 @@ def get_cost_history_summary(customer_id: str, months: list) -> dict:
         if len(ordered) >= 2:
             last_val = ordered[-1]
             if is_partial and present_months[-1] == current_month:
-                last_val, _ = classify_project_amount(last_val, service, completion_ratio)
+                last_val = _project_service(service, last_val)
             delta = last_val - ordered[-2]
             threshold = max(50.0, abs(ordered[-2]) * 0.03)
             if delta > threshold:
@@ -733,7 +784,7 @@ def get_cost_history_summary(customer_id: str, months: list) -> dict:
         curr = month_vals.get(current_month, 0.0)
         prev = month_vals.get(previous_month, 0.0) if previous_month else 0.0
         if is_partial:
-            curr_projected, _ = classify_project_amount(curr, service, completion_ratio)
+            curr_projected = _project_service(service, curr)
         else:
             curr_projected = curr
         mom_delta = curr_projected - prev
@@ -852,6 +903,7 @@ def get_cost_history_summary(customer_id: str, months: list) -> dict:
             'importedAt': coverage_imported_at,
         },
         'computeCoverage': compute_coverage,
+        'endOfMonthProjections': end_of_month_projections,
         'projectedCurrentMonth': projected_current_month,
         'isPartial': is_partial,
         'completionRatio': round(completion_ratio, 4),

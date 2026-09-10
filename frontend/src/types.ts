@@ -384,6 +384,11 @@ export interface CostHistorySummary {
   infrastructureMom: InfrastructureMom | null
   savingsPlanCoverage: SavingsPlanCoverage
   computeCoverage: ComputeCoverage | null
+  // Current-month (partial-month only) estimates for end-of-month lump-sum charges
+  // (Enterprise Support, AWS Partner Pricing Adjustment), keyed by exact service
+  // name — historical-%-of-spend based, not a days-elapsed projection. Empty when
+  // the current month is complete or no historical baseline exists.
+  endOfMonthProjections: Record<string, number>
   projectedCurrentMonth: number
   isPartial: boolean
   completionRatio: number
