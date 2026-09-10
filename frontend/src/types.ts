@@ -355,10 +355,21 @@ export interface SavingsCoverageImportResult {
   error?: string
 }
 
+export interface InfrastructureMom {
+  delta: number
+  pct: number | null
+  currentMonth: string
+  priorMonth: string
+  currentInfra: number
+  priorInfra: number
+  label: string
+}
+
 export interface CostHistorySummary {
   monthlyTotals: CostMonthlyTotal[]
   byService: CostByService[]
   topServices: CostTopService[]
+  infrastructureMom: InfrastructureMom | null
   savingsPlanCoverage: SavingsPlanCoverage
   projectedCurrentMonth: number
   isPartial: boolean

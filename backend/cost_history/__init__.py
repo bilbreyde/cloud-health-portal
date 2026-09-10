@@ -8,6 +8,7 @@ import azure.functions as func
 import pandas as pd
 
 from shared import cosmos_client
+from shared.cost_classifier import classify_charge_bucket
 from shared.response_helpers import cors_options, cors_response
 
 _MONTH_RE = re.compile(r'^\d{4}-\d{2}$')
@@ -183,6 +184,7 @@ def _handle_get(req: func.HttpRequest, customer_id: str) -> func.HttpResponse:
 
     start_month = (req.params.get('startMonth') or '0000-00').strip()
     end_month = (req.params.get('endMonth') or '9999-99').strip()
+    debug = (req.params.get('debug') or '').strip().lower() == 'true'
 
     all_records = cosmos_client.get_cost_history(customer_id, start_month, end_month)
     months = sorted({r.month for r in all_records})
@@ -191,6 +193,38 @@ def _handle_get(req: func.HttpRequest, customer_id: str) -> func.HttpResponse:
     # dashboard/upload pages can render their "not imported yet" UI without treating
     # a routine background fetch as a failed request.
     summary = cosmos_client.get_cost_history_summary(customer_id, months)
+
+    infra_mom = summary.get('infrastructureMom')
+    if infra_mom:
+        logging.info(
+            'MoM calc: current=%s infra=%.2f prior=%s infra=%.2f delta=%.2f',
+            infra_mom['currentMonth'], infra_mom['currentInfra'],
+            infra_mom['priorMonth'], infra_mom['priorInfra'], infra_mom['delta'],
+        )
+
+    if debug:
+        # Full per-service bucket breakdown for the requested window — lets a caller
+        # verify e.g. that every Marketplace line lands in 'one_time', not 'infrastructure',
+        # without having to re-derive classify_charge_bucket() by hand.
+        service_totals: dict[str, dict] = {}
+        for r in all_records:
+            entry = service_totals.setdefault(r.service, {'service': r.service, 'chargeTypes': set(), 'amount': 0.0})
+            entry['amount'] += r.amount
+            entry['chargeTypes'].add(r.chargeType)
+        debug_services = sorted(
+            (
+                {
+                    'service': e['service'],
+                    'chargeTypes': sorted(e['chargeTypes']),
+                    'amount': round(e['amount'], 2),
+                    'bucket': classify_charge_bucket(e['service']),
+                }
+                for e in service_totals.values()
+            ),
+            key=lambda x: -abs(x['amount']),
+        )
+        summary['debug'] = {'months': months, 'services': debug_services}
+
     return cors_response(summary)
 
 

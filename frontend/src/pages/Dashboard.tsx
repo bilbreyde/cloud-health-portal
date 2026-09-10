@@ -55,6 +55,10 @@ function fmtSignedPct(n: number) {
 function momColor(n: number) {
   return n > 0 ? 'var(--red)' : n < 0 ? 'var(--green)' : undefined
 }
+// Spend up = red ▲ (bad), spend down = green ▼ (good) — matches momColor.
+function momArrow(n: number) {
+  return n > 0 ? '▲' : n < 0 ? '▼' : ''
+}
 function fmtK(n: number) {
   const abs = Math.abs(n)
   if (abs >= 1_000_000) return `$${(abs / 1_000_000).toFixed(1)}M`
@@ -541,22 +545,28 @@ export default function Dashboard() {
   const isLatestCurrent = latestCostMonth?.isPartial ?? false
   const currentMonthPartial = isLatestCurrent ? latestCostMonth : null
   const lastFullMonth = isLatestCurrent ? costTotals[costTotals.length - 2] : latestCostMonth
-  const priorToLastFull = isLatestCurrent ? costTotals[costTotals.length - 3] : costTotals[costTotals.length - 2]
-  // MoM change is INFRASTRUCTURE spend only (rule 8) — never total/net billed, which
-  // still carries Marketplace and other one-time charges. Both months here are always
-  // fully-closed months, satisfying "prior month must be complete".
-  const costMomDelta = lastFullMonth && priorToLastFull
-    ? lastFullMonth.infrastructureSpend - priorToLastFull.infrastructureSpend : null
-  const costMomPct = costMomDelta !== null && priorToLastFull && priorToLastFull.infrastructureSpend !== 0
-    ? (costMomDelta / priorToLastFull.infrastructureSpend) * 100 : null
+  // Infrastructure MoM comes straight from the backend (get_cost_history_summary's
+  // infrastructureMom) instead of being recomputed here — it's built from the exact
+  // same current/previous month pair as the Top Services table's per-service MoM
+  // column, so the two can never disagree on which two months are being compared
+  // or land on opposite signs. See MoM calc rules a–e (never compare two partial
+  // months; prior is always the immediately preceding COMPLETE month).
+  const infrastructureMom = costData?.infrastructureMom ?? null
 
-  // Projected MoM: current (partial, projected) month's infra spend vs. the last full
-  // month's infra spend — NEVER the raw to-date amount, which is naturally smaller and
-  // would read as a cost drop. Marketplace is never part of either side.
-  const projectedMomDelta = currentMonthPartial && lastFullMonth
-    ? currentMonthPartial.projectedInfrastructureSpend - lastFullMonth.infrastructureSpend : null
-  const projectedMomPct = projectedMomDelta !== null && lastFullMonth && lastFullMonth.infrastructureSpend !== 0
-    ? (projectedMomDelta / lastFullMonth.infrastructureSpend) * 100 : null
+  // Current-month-partial card's "Projected MoM" line reuses the same figure —
+  // never recomputed independently, so it can't drift from the KPI card above.
+  const projectedMomDelta = currentMonthPartial ? infrastructureMom?.delta ?? null : null
+  const projectedMomPct = currentMonthPartial ? infrastructureMom?.pct ?? null : null
+
+  // Human-readable month-comparison subtitle, e.g. "Sep projected vs Aug actual" —
+  // makes it obvious at a glance which two months are being compared, so a wrong
+  // month pairing (the original bug) is immediately visible instead of hidden
+  // behind a bare dollar figure.
+  const infraMomLabel = infrastructureMom
+    ? `${fmtCostMonth(infrastructureMom.currentMonth).split(' ')[0]} ` +
+      `${currentMonthPartial && infrastructureMom.currentMonth === currentMonthPartial.month ? 'projected' : 'actual'} vs ` +
+      `${fmtCostMonth(infrastructureMom.priorMonth).split(' ')[0]} actual`
+    : undefined
   const costHasData = !!costData && costData.monthlyTotals.length > 0
   const costChart = costHasData ? buildCostChartData(costData!) : null
 
@@ -733,11 +743,14 @@ export default function Dashboard() {
                 />
                 <CostKpiCard
                   label="Infrastructure MoM"
-                  value={costMomDelta !== null ? fmtSignedMoney(costMomDelta) : '—'}
-                  accent={costMomDelta !== null ? momColor(costMomDelta) : undefined}
-                  sub={costMomPct !== null ? fmtSignedPct(costMomPct) : undefined}
-                  subColor={costMomPct !== null ? momColor(costMomPct) : undefined}
-                  tooltip="Compares recurring infrastructure spend only. One-time Marketplace purchases excluded."
+                  value={infrastructureMom
+                    ? `${momArrow(infrastructureMom.delta)} ${fmtSignedMoney(infrastructureMom.delta)}` +
+                      (infrastructureMom.pct !== null ? ` (${fmtSignedPct(infrastructureMom.pct)})` : '')
+                    : '—'}
+                  accent={infrastructureMom ? momColor(infrastructureMom.delta) : undefined}
+                  sub={infraMomLabel}
+                  subColor={infrastructureMom ? momColor(infrastructureMom.delta) : undefined}
+                  tooltip="Compares recurring infrastructure spend only (Marketplace and other one-time charges excluded). Current month uses its projected full-month figure if still in progress; prior is always the most recent complete month."
                 />
                 <CostKpiCard
                   label="Savings Plan Coverage"

@@ -769,10 +769,43 @@ def get_cost_history_summary(customer_id: str, months: list) -> dict:
     projected_current_month = round(project_amount(direct_total, completion_ratio), 2) if is_partial \
         else round(direct_total, 2)
 
+    # ── infrastructure MoM (single source of truth for the Dashboard KPI card) ──
+    # Deliberately reuses current_month/previous_month — the exact same pair
+    # topServices above compares each service against — so the aggregate
+    # Infrastructure MoM card and the per-service Top Services table can never
+    # disagree on which two months are being compared. Only the current (last)
+    # month can ever be isPartial (every earlier month is always complete by
+    # construction above), so previous_month here is always a complete month —
+    # never two partial months, never a month whose classification changed
+    # mid-calculation.
+    infra_by_month = {m['month']: m for m in monthly_totals}
+    curr_entry = infra_by_month.get(current_month)
+    prev_entry = infra_by_month.get(previous_month) if previous_month else None
+
+    infrastructure_mom = None
+    if curr_entry and prev_entry:
+        curr_infra = curr_entry['projectedInfrastructureSpend'] if curr_entry['isPartial'] else curr_entry['infrastructureSpend']
+        prior_infra = prev_entry['infrastructureSpend']
+        infra_mom_delta = round(curr_infra - prior_infra, 2)
+        infra_mom_pct = round(infra_mom_delta / prior_infra * 100, 2) if prior_infra else None
+        infrastructure_mom = {
+            'delta': infra_mom_delta,
+            'pct': infra_mom_pct,
+            'currentMonth': current_month,
+            'priorMonth': previous_month,
+            'currentInfra': round(curr_infra, 2),
+            'priorInfra': round(prior_infra, 2),
+            'label': (
+                f'{current_month} projected vs {previous_month} actual' if curr_entry['isPartial']
+                else f'{current_month} actual vs {previous_month} actual'
+            ),
+        }
+
     return {
         'monthlyTotals': monthly_totals,
         'byService': by_service,
         'topServices': top_services,
+        'infrastructureMom': infrastructure_mom,
         'savingsPlanCoverage': {
             'covered': round(covered, 2),
             'onDemand': round(on_demand, 2),
