@@ -16,7 +16,6 @@ ONE_TIME_SERVICES = [
     "Amazon Marketplace",
     "AWS Marketplace",
     "AWS Partner Pricing Adjustment",
-    "Enterprise Support",
     "AWS Config",
     "AWS CloudTrail",
     "Amazon Inspector",
@@ -39,6 +38,7 @@ CREDIT_SERVICES = [
 ]
 
 RECURRING_SERVICES = [
+    "Enterprise Support",
     "EC2 - Compute",
     "RDS - Compute",
     "RDS - Database",
@@ -78,20 +78,20 @@ ANOMALY_RULES = {
         "exclude_from_projection": True,
     },
     "AWS Partner Pricing Adjustment": {
-        "pattern": "one_time",
-        "flag_type": "Billing Adjustment",
-        "color": "blue",
-        "description": "End-of-period billing correction from AWS. Not recurring.",
-        "exclude_from_edp": True,
-        "exclude_from_projection": True,
+        "pattern": "variable_adjustment",
+        "flag_type": "Variable Adjustment",
+        "color": "gray",
+        "description": "AWS billing adjustment that scales with total monthly spend, not a flat one-time correction.",
+        "exclude_from_edp": False,
+        "exclude_from_projection": False,
     },
     "Enterprise Support": {
-        "pattern": "one_time",
-        "flag_type": "Flat Monthly Fee",
-        "color": "gray",
-        "description": "Fixed monthly support fee charged at period start.",
+        "pattern": "support_fee",
+        "flag_type": "Support Fee",
+        "color": "purple",
+        "description": "AWS Enterprise Support — accrues monthly as a percentage of total AWS spend (with a contractual minimum), not a flat fee. Recurring, but not infrastructure.",
         "exclude_from_edp": False,
-        "exclude_from_projection": True,
+        "exclude_from_projection": False,
     },
     "Savings Plan - Unused": {
         "pattern": "one_time",
@@ -339,12 +339,16 @@ def compute_edp_utilization(services_data: list, monthly_obligation: float, is_p
         # Everything else counts toward EDP — it was billed, so it consumes commitment.
         total_billed += amount
 
+        # Bucketed by classify_charge_bucket (not classification['pattern']) so support
+        # fees and variable adjustments — recurring and projected, but not infrastructure
+        # — still land in "one-time / other" for this breakdown rather than leaking into
+        # infrastructure_total just because their pattern is no longer 'one_time'.
         if 'marketplace' in service.lower():
             marketplace_total += amount
-        elif classification['pattern'] == 'one_time':
-            one_time_total += amount
-        else:
+        elif classify_charge_bucket(service) == 'infrastructure':
             infrastructure_total += amount
+        else:
+            one_time_total += amount
 
     net_toward_edp = total_billed  # credit-pattern lines were never added, so already net
     utilization_pct = (net_toward_edp / monthly_obligation * 100) if monthly_obligation > 0 else 0
@@ -410,11 +414,24 @@ def optional_matched_rule(service_name: str) -> Optional[str]:
 CHARGE_BUCKET_ONE_TIME = [
     'Amazon Marketplace',
     'AWS Marketplace',
-    'Enterprise Support',
     'AWS Config',
     'AWS CloudTrail',
     'Certificate Manager',
 ]
+
+# Recurring, but not infrastructure — support/management fees that accrue monthly
+# (often as a % of total spend) rather than for a specific compute/storage resource.
+# Included in EDP utilization and projected linearly on a partial month, but kept
+# out of infrastructureSpend so they never distort the infrastructure MoM trend.
+CHARGE_BUCKET_SUPPORT_FEE = [
+    'Enterprise Support',
+    'AWS Support',
+]
+
+# AWS billing adjustments that scale with total monthly spend (not a flat one-time
+# correction) — same treatment as support fees: counted toward EDP, projected
+# linearly on a partial month, excluded from the infrastructure MoM trend.
+_VARIABLE_ADJUSTMENT_NAMES = ['aws partner pricing adjustment']
 
 _SP_TRUE_UP_KEYWORDS = ['negation', 'ri credit', 'ri volume discount', 'reserved instance']
 _SP_TRUE_UP_NAMES = [
@@ -423,12 +440,12 @@ _SP_TRUE_UP_NAMES = [
     'compute savings plan - unused',
 ]
 
-_BILLING_ADJUSTMENT_NAMES = ['aws partner pricing adjustment']
 _BILLING_ADJUSTMENT_KEYWORDS = ['refund', 'credit']
 
 
 def classify_charge_bucket(service_name: str) -> str:
-    """Returns one of: 'infrastructure' | 'one_time' | 'billing_adjustment' | 'sp_true_up'."""
+    """Returns one of: 'infrastructure' | 'one_time' | 'billing_adjustment' | 'sp_true_up'
+    | 'support_fee' | 'variable_adjustment'."""
     service_lower = service_name.lower()
 
     # SP true-up checked first — "Negation Credit(s)" would otherwise match the
@@ -438,11 +455,15 @@ def classify_charge_bucket(service_name: str) -> str:
     if any(k in service_lower for k in _SP_TRUE_UP_KEYWORDS):
         return 'sp_true_up'
 
+    if _matches_any(service_lower, CHARGE_BUCKET_SUPPORT_FEE):
+        return 'support_fee'
+
+    if any(name in service_lower for name in _VARIABLE_ADJUSTMENT_NAMES):
+        return 'variable_adjustment'
+
     if _matches_any(service_lower, CHARGE_BUCKET_ONE_TIME):
         return 'one_time'
 
-    if any(name in service_lower for name in _BILLING_ADJUSTMENT_NAMES):
-        return 'billing_adjustment'
     if any(k in service_lower for k in _BILLING_ADJUSTMENT_KEYWORDS):
         return 'billing_adjustment'
 

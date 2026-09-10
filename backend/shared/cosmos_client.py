@@ -561,6 +561,8 @@ def get_cost_history_summary(customer_id: str, months: list) -> dict:
         'byService': [],
         'topServices': [],
         'savingsPlanCoverage': {'covered': 0.0, 'onDemand': 0.0, 'coveragePct': None, 'sourceMonth': None, 'importedAt': None},
+        'computeCoverage': None,
+        'infrastructureMom': None,
         'projectedCurrentMonth': 0.0,
         'isPartial': False,
         'completionRatio': 1.0,
@@ -595,7 +597,10 @@ def get_cost_history_summary(customer_id: str, months: list) -> dict:
     # per shared.cost_classifier.classify_charge_bucket — drives infrastructureSpend,
     # oneTimeCharges, billingAdjustments, spTrueUp, totalBilled and netBilled below.
     bucket_by_month: dict[str, dict[str, float]] = {
-        m: {'infrastructure': 0.0, 'one_time': 0.0, 'billing_adjustment': 0.0, 'sp_true_up': 0.0}
+        m: {
+            'infrastructure': 0.0, 'one_time': 0.0, 'billing_adjustment': 0.0, 'sp_true_up': 0.0,
+            'support_fee': 0.0, 'variable_adjustment': 0.0,
+        }
         for m in months_sorted
     }
     gross_by_month: dict[str, float] = {m: 0.0 for m in months_sorted}  # sum of positive-amount lines only
@@ -648,6 +653,13 @@ def get_cost_history_summary(customer_id: str, months: list) -> dict:
         infrastructure_spend = round(buckets.get('infrastructure', 0.0) + sp_true_up, 2)
         one_time_charges = round(buckets.get('one_time', 0.0), 2)
         billing_adjustments = round(buckets.get('billing_adjustment', 0.0), 2)
+        # Recurring, but not infrastructure — support fees (Enterprise Support) and
+        # variable adjustments (AWS Partner Pricing Adjustment) that scale with total
+        # spend. Counted toward EDP/net billed, projected linearly on a partial month,
+        # but never folded into infrastructure_spend so they can't distort the
+        # infrastructure MoM trend.
+        support_fees = round(buckets.get('support_fee', 0.0), 2)
+        variable_adjustments = round(buckets.get('variable_adjustment', 0.0), 2)
         total_billed = round(gross_by_month.get(m, 0.0), 2)   # gross: positive-amount lines only
         net_billed = net                                       # net: everything summed, credits already netted in
 
@@ -672,6 +684,11 @@ def get_cost_history_summary(customer_id: str, months: list) -> dict:
             'oneTimeCharges': one_time_charges,
             'billingAdjustments': billing_adjustments,
             'spTrueUp': sp_true_up,
+            'supportFees': support_fees,
+            'projectedSupportFees': round(project_amount(support_fees, ratio), 2) if m_is_partial else support_fees,
+            'variableAdjustments': variable_adjustments,
+            'projectedVariableAdjustments': round(project_amount(variable_adjustments, ratio), 2)
+                if m_is_partial else variable_adjustments,
             'totalBilled': total_billed,
             'netBilled': net_billed,
             'marketplacePurchases': marketplace_purchases,
@@ -769,6 +786,27 @@ def get_cost_history_summary(customer_id: str, months: list) -> dict:
     projected_current_month = round(project_amount(direct_total, completion_ratio), 2) if is_partial \
         else round(direct_total, 2)
 
+    # ── compute coverage (Dashboard "Compute Coverage" widget) ─────────────────
+    # Unlike savingsPlanCoverage above, this is NOT derived from billing-data SP
+    # negation credits — those are suppressed/near-zero mid-month (billing-lag,
+    # same true-up issue as sp_true_up), which on a partial month made on-demand
+    # read as the entire EC2 - Compute total with $0 covered (or vice versa). Both
+    # figures here instead come from the imported CloudHealth SP coverage % applied
+    # to the EC2 - Compute total (projected if the current month is partial), so
+    # the split always reflects the actual imported coverage percentage.
+    ec2_compute_total = round(project_amount(ec2_compute_direct, completion_ratio), 2) \
+        if is_partial else round(ec2_compute_direct, 2)
+    if coverage_pct is not None:
+        compute_coverage = {
+            'coveragePct': coverage_pct,
+            'ec2ComputeTotal': ec2_compute_total,
+            'spCovered': round(ec2_compute_total * (coverage_pct / 100), 2),
+            'onDemand': round(ec2_compute_total * (1 - coverage_pct / 100), 2),
+            'source': 'CloudHealth SP report',
+        }
+    else:
+        compute_coverage = None
+
     # ── infrastructure MoM (single source of truth for the Dashboard KPI card) ──
     # Deliberately reuses current_month/previous_month — the exact same pair
     # topServices above compares each service against — so the aggregate
@@ -813,6 +851,7 @@ def get_cost_history_summary(customer_id: str, months: list) -> dict:
             'sourceMonth': coverage_source_month,
             'importedAt': coverage_imported_at,
         },
+        'computeCoverage': compute_coverage,
         'projectedCurrentMonth': projected_current_month,
         'isPartial': is_partial,
         'completionRatio': round(completion_ratio, 4),

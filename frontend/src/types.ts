@@ -296,9 +296,21 @@ export interface CostMonthlyTotal {
   oneTimeCharges: number
   billingAdjustments: number
   spTrueUp: number
+  supportFees: number
+  projectedSupportFees: number
+  variableAdjustments: number
+  projectedVariableAdjustments: number
   totalBilled: number
   netBilled: number
   marketplacePurchases: MarketplacePurchaseLine[]
+}
+
+export interface ComputeCoverage {
+  coveragePct: number
+  ec2ComputeTotal: number
+  spCovered: number
+  onDemand: number
+  source: string
 }
 
 export interface MarketplacePurchase {
@@ -371,6 +383,7 @@ export interface CostHistorySummary {
   topServices: CostTopService[]
   infrastructureMom: InfrastructureMom | null
   savingsPlanCoverage: SavingsPlanCoverage
+  computeCoverage: ComputeCoverage | null
   projectedCurrentMonth: number
   isPartial: boolean
   completionRatio: number
@@ -391,7 +404,7 @@ export interface Report {
 }
 
 export type AnomalyType = 'new_service' | 'statistical_anomaly' | 'spike' | 'commitment_risk'
-export type ChargePattern = 'one_time' | 'recurring' | 'credit' | 'mixed'
+export type ChargePattern = 'one_time' | 'recurring' | 'credit' | 'mixed' | 'support_fee' | 'variable_adjustment'
 export type ClassifierColor = 'blue' | 'yellow' | 'orange' | 'red' | 'purple' | 'gray' | 'green'
 
 export interface SpendAnomaly {

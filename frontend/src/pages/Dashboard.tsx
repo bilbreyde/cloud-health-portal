@@ -9,7 +9,7 @@ import { fetchCostHistory, fetchDashboardNarrative, fetchTrends, importSavingsCo
 import MarketplaceBanner from '../components/MarketplaceBanner'
 import PartialMonthBanner from '../components/PartialMonthBanner'
 import { useCustomer } from '../context/CustomerContext'
-import type { CostHistorySummary, DashboardNarrativeResponse, DataSnapshot, SavingsPlanCoverage, ServiceRow, TrendsResponse } from '../types'
+import type { ComputeCoverage, CostHistorySummary, DashboardNarrativeResponse, DataSnapshot, ServiceRow, TrendsResponse } from '../types'
 
 const MONTH_ABBR = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
 
@@ -80,8 +80,8 @@ function Skeleton({ height = 40 }: { height?: number }) {
 }
 
 function MetricPill({
-  label, value, accent, sub,
-}: { label: string; value: string; accent?: string; sub?: string }) {
+  label, value, accent, sub, sub2,
+}: { label: string; value: string; accent?: string; sub?: string; sub2?: string }) {
   return (
     <div style={{
       flex: '1 1 140px', padding: '12px 14px', background: 'var(--surface)',
@@ -94,6 +94,7 @@ function MetricPill({
       </div>
       <div style={{ fontSize: 17, fontWeight: 700, color: accent ?? 'var(--text)' }}>{value}</div>
       {sub && <div style={{ fontSize: 10, color: 'var(--muted)', marginTop: 3 }}>{sub}</div>}
+      {sub2 && <div style={{ fontSize: 10, color: 'var(--muted)', marginTop: 1 }}>{sub2}</div>}
     </div>
   )
 }
@@ -303,18 +304,27 @@ function CostKpiCard({
   )
 }
 
-function ComputeCoverageWidget({ coverage }: { coverage: SavingsPlanCoverage }) {
-  const total = coverage.covered + coverage.onDemand
-  const coveredPct = total > 0 ? (coverage.covered / total) * 100 : 0
+function ComputeCoverageWidget({ coverage }: { coverage: ComputeCoverage | null }) {
+  if (!coverage) {
+    return (
+      <div className="card" style={{ marginBottom: 0, flex: 1 }}>
+        <div className="card-title">Compute Coverage</div>
+        <p style={{ color: 'var(--muted)', fontSize: 13 }}>
+          No CloudHealth SP coverage report imported yet.
+        </p>
+      </div>
+    )
+  }
+  const coveredPct = coverage.coveragePct
   return (
     <div className="card" style={{ marginBottom: 0, flex: 1 }}>
       <div className="card-title">Compute Coverage</div>
       <div style={{ textAlign: 'center', marginBottom: 14 }}>
         <div style={{ fontSize: 28, fontWeight: 700, color: COST_PALETTE[0] }}>
-          {coverage.coveragePct != null ? `${coverage.coveragePct.toFixed(1)}%` : 'N/A'}
+          {coveredPct.toFixed(1)}%
         </div>
         <div style={{ fontSize: 10, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '.5px' }}>
-          Savings Plan Coverage
+          Savings Plan Coverage — {coverage.source}
         </div>
       </div>
       <div style={{ display: 'flex', height: 14, borderRadius: 7, overflow: 'hidden', border: '1px solid var(--border)' }}>
@@ -322,8 +332,11 @@ function ComputeCoverageWidget({ coverage }: { coverage: SavingsPlanCoverage }) 
         <div style={{ width: `${100 - coveredPct}%`, background: 'var(--border)' }} />
       </div>
       <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 10, fontSize: 12 }}>
-        <span style={{ color: COST_PALETTE[0], fontWeight: 600 }}>● Savings Plan {fmtMoney(coverage.covered)}</span>
+        <span style={{ color: COST_PALETTE[0], fontWeight: 600 }}>● Savings Plan {fmtMoney(coverage.spCovered)}</span>
         <span style={{ color: 'var(--muted)', fontWeight: 600 }}>● On-Demand {fmtMoney(coverage.onDemand)}</span>
+      </div>
+      <div style={{ fontSize: 10, color: 'var(--muted)', marginTop: 8, textAlign: 'center' }}>
+        of {fmtMoney(coverage.ec2ComputeTotal)} EC2 - Compute total
       </div>
     </div>
   )
@@ -357,7 +370,8 @@ function TopServicesTable({
                 const down = s.momDelta < -0.5
                 const cls = up ? 'up' : down ? 'down' : 'flat' // .up=red (cost increase), .down=green (cost decrease)
                 const arrow = up ? '▲' : down ? '▼' : '—'
-                const wasProjected = s.isPartial && s.pattern === 'recurring'
+                const wasProjected = s.isPartial &&
+                  (s.pattern === 'recurring' || s.pattern === 'support_fee' || s.pattern === 'variable_adjustment')
                 const displayAmount = wasProjected ? s.projectedAmount : s.currentMonth
                 return (
                   <tr key={s.service}>
@@ -365,6 +379,10 @@ function TopServicesTable({
                     <td>
                       {s.pattern === 'one_time' && <span className="badge badge-blue">One-Time</span>}
                       {s.pattern === 'credit' && <span className="badge badge-green">Credit</span>}
+                      {s.pattern === 'support_fee' && (
+                        <span className="badge" style={{ background: '#F2EEFB', color: '#5B3FA6' }}>Support Fee</span>
+                      )}
+                      {s.pattern === 'variable_adjustment' && <span className="badge badge-gray">Adjustment</span>}
                       {s.pattern === 'recurring' && <span style={{ color: 'var(--muted)', fontSize: 12 }}>Recurring</span>}
                     </td>
                     <td style={wasProjected ? { fontStyle: 'italic', color: 'var(--blue)' } : undefined}>
@@ -536,6 +554,21 @@ export default function Dashboard() {
     return ((last.total - prev.total) / prev.total) * 100
   })()
 
+  // Which two months the MoM % pill above is comparing — same transparency
+  // treatment as the Infrastructure MoM card, so a wrong month pairing is
+  // visible at a glance instead of hidden behind a bare percentage. Unlike
+  // cost_history, CloudHealth signal snapshots carry no partial-month/projection
+  // concept, so this is a plain month comparison rather than "projected vs actual".
+  const momCompareLabel = (() => {
+    if (!data || data.monthly_totals.length < 2) return undefined
+    const sorted = [...data.monthly_totals].sort((a, b) =>
+      a.year !== b.year ? a.year - b.year : a.month - b.month,
+    )
+    const last = sorted[sorted.length - 1]
+    const prev = sorted[sorted.length - 2]
+    return `${MONTH_ABBR[last.month - 1]} ${last.year} vs ${MONTH_ABBR[prev.month - 1]} ${prev.year}`
+  })()
+
   // ── Derived: cost history KPIs ────────────────────────────────────────────
   // isPartial/completionRatio come from the backend (single source of truth for
   // "how much of the current month has elapsed") — never recomputed client-side,
@@ -698,6 +731,7 @@ export default function Dashboard() {
             sub={momPct !== null
               ? (momPct > 0 ? 'Signal increasing' : 'Signal decreasing')
               : 'Load data to see'}
+            sub2={momPct !== null ? momCompareLabel : undefined}
           />
         </div>
       )}
@@ -858,7 +892,7 @@ export default function Dashboard() {
                 </div>
 
                 {/* Compute Coverage */}
-                {costData && <ComputeCoverageWidget coverage={costData.savingsPlanCoverage} />}
+                {costData && <ComputeCoverageWidget coverage={costData.computeCoverage} />}
               </div>
 
               {/* Top Services table */}
