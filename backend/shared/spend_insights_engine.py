@@ -27,17 +27,27 @@ def _fmt(n: float) -> str:
 
 
 def is_partial_month(month_str: str, today: Optional[date] = None) -> tuple:
-    """(is_partial, completion_ratio) — e.g. Jul 23 of 31 days -> (True, 0.7419...).
+    """(is_partial, completion_ratio) — e.g. Jul 23 of 31 days -> (True, 0.7097...).
 
     Only the real, still-in-progress calendar month is ever partial; a past month
     is always (False, 1.0) even if it happens to have sparse/incomplete billing
     data — "partial" here means calendar-partial, not data-partial.
+
+    completion_ratio is snapped to the last fully-elapsed day (today.day - 1), not
+    today itself — today's billing data is still trickling in throughout the day,
+    so a ratio that includes it makes every projected figure (MoM, EDP trailing
+    avg, anomaly baselines, …) shift every time someone refreshes mid-day, even
+    though nothing about the month actually changed. Freezing the ratio to
+    yesterday's close means it moves once per day, at day-rollover, not on every
+    page load. Display strings ("11 of 30 days") should keep using today.day
+    (see month_day_counts) — only the projection math uses this stabilized ratio.
     """
     today = today or date.today()
     year, month = int(month_str[:4]), int(month_str[5:7])
     if year == today.year and month == today.month:
         days_in_month = calendar.monthrange(year, month)[1]
-        return True, today.day / days_in_month
+        completed_days = max(1, today.day - 1)
+        return True, completed_days / days_in_month
     return False, 1.0
 
 
@@ -383,16 +393,16 @@ _EDP_RISK_RATIO = 0.85  # trailing 3-mo net-toward-EDP avg below this fraction o
 _EDP_OVER_COMMITTED_RATIO = 1.10  # trailing 3-mo avg above this fraction -> informational, not a risk
 
 
-def _net_toward_edp_for_month(by_service: list, month: str, monthly_obligation: float) -> float:
-    """All AWS-billed spend for `month` minus AWS-applied credits (compute_edp_utilization) —
-    Marketplace/Enterprise Support/etc. all count, only genuine credits/negations are excluded.
-    Always called for a COMPLETE month, so no partial-month suppression or projection applies."""
+def _edp_breakdown_for_month(by_service: list, month: str, monthly_obligation: float) -> dict:
+    """Full compute_edp_utilization() breakdown for `month` — net spend toward EDP
+    (all billed spend minus AWS-applied credits) plus the infrastructure/marketplace/
+    one-time split. Always called for a COMPLETE month, so no partial-month
+    suppression or projection applies."""
     services_data = [
         {'service': s['service'], 'amount': s['months'][month], 'projected_amount': s['months'][month]}
         for s in by_service if month in s.get('months', {})
     ]
-    edp = compute_edp_utilization(services_data, monthly_obligation, is_partial=False)
-    return edp['net_toward_edp']
+    return compute_edp_utilization(services_data, monthly_obligation, is_partial=False)
 
 
 def compute_opportunities(
@@ -516,38 +526,42 @@ def compute_opportunities(
             ),
         })
 
-    # EDP burn-rate risk — trailing average of the last 3 COMPLETE months' NET SPEND
-    # TOWARD EDP (all billed spend minus AWS-applied credits — Marketplace and other
-    # one-time charges count). Only complete months enter the average since a partial
-    # month's figure isn't final; months with a large Marketplace purchase will
-    # naturally inflate this, which is correct — that dollar really was billed.
+    # EDP burn-rate risk — trailing average of the last 3 COMPLETE months' INFRASTRUCTURE
+    # spend (infrastructure + other one-time, Marketplace excluded). Only complete months
+    # enter the average since a partial month's figure isn't final. Deliberately excludes
+    # Marketplace here (unlike netTowardEdp/utilizationPct, which count it) — a large
+    # one-off software purchase (e.g. a $2M Okta renewal) is irregular and must not mask
+    # an otherwise under-utilized commitment; same methodology as
+    # compute_commitment_utilization's infraTrailingAvg, so the two never disagree.
     if monthly_obligation and months_in_window:
         complete_months = [m for m in months_in_window if not (is_partial and m == current_month)]
         last_3_complete = complete_months[-3:]
         if len(last_3_complete) >= 2:
-            trailing_vals = [_net_toward_edp_for_month(by_service, m, monthly_obligation) for m in last_3_complete]
-            trailing_avg = statistics.mean(trailing_vals)
-            utilization_trailing = trailing_avg / monthly_obligation * 100
+            breakdowns = [_edp_breakdown_for_month(by_service, m, monthly_obligation) for m in last_3_complete]
+            infra_vals = [b['infrastructure_spend'] + b['one_time_spend'] for b in breakdowns]
+            infra_trailing_avg = statistics.mean(infra_vals)
+            utilization_trailing = infra_trailing_avg / monthly_obligation * 100
             threshold_85 = monthly_obligation * _EDP_RISK_RATIO
             if utilization_trailing < 85:
                 opportunities.append({
                     'category': 'EDP Risk', 'service': 'EDP Under-Utilization Risk',
-                    'currentCost': round(trailing_avg, 2), 'estimatedSavings': 0.0, 'priority': 'Critical',
+                    'currentCost': round(infra_trailing_avg, 2), 'estimatedSavings': 0.0, 'priority': 'Critical',
                     'action': (
-                        f'Trailing {len(last_3_complete)}-month average net spend ({_fmt(trailing_avg)}) is below '
-                        f'85% of EDP obligation ({_fmt(threshold_85)}). Risk of unfavorable renewal terms. '
-                        f'Identify workloads to migrate to AWS to consume committed capacity.'
+                        f'Trailing {len(last_3_complete)}-month average infrastructure spend '
+                        f'({_fmt(infra_trailing_avg)}) is below 85% of EDP obligation ({_fmt(threshold_85)}) — '
+                        f'Marketplace/software licensing purchases excluded as irregular. Risk of unfavorable '
+                        f'renewal terms. Identify workloads to migrate to AWS to consume committed capacity.'
                     ),
                 })
             elif utilization_trailing > _EDP_OVER_COMMITTED_RATIO * 100:
                 # Over-committed — informational only, not a savings opportunity or a risk.
                 opportunities.append({
                     'category': 'EDP Status', 'service': 'EDP Over-Committed',
-                    'currentCost': round(trailing_avg, 2), 'estimatedSavings': 0.0, 'priority': 'Low',
+                    'currentCost': round(infra_trailing_avg, 2), 'estimatedSavings': 0.0, 'priority': 'Low',
                     'action': (
-                        f'Trailing {len(last_3_complete)}-month average net spend ({_fmt(trailing_avg)}) is above '
-                        f'110% of EDP obligation ({_fmt(monthly_obligation)}) — strong renewal position, '
-                        f'no action needed.'
+                        f'Trailing {len(last_3_complete)}-month average infrastructure spend '
+                        f'({_fmt(infra_trailing_avg)}) is above 110% of EDP obligation ({_fmt(monthly_obligation)}) '
+                        f'— strong renewal position, no action needed.'
                     ),
                 })
 
@@ -607,30 +621,51 @@ def compute_commitment_utilization(
     edp = compute_edp_utilization(services_data, monthly_obligation, is_partial=is_partial)
     actual_spend_to_date = sum(s['amount'] for s in services_data)
 
-    # Trailing average of the last 3 COMPLETE months' net spend toward EDP — same
+    # Trailing average of the last 3 COMPLETE months, computed TWO ways — same
     # methodology as the "EDP Under-Utilization Risk" opportunity card, so the two
     # never disagree. A partial current month is never one of the 3.
+    #
+    # totalTrailingAvg counts everything net toward EDP (Marketplace included) —
+    # what actually consumes the commitment dollar-for-dollar. infraTrailingAvg
+    # excludes Marketplace, since a large one-off software purchase (e.g. a $2M
+    # Okta renewal) is irregular and shouldn't make a renewal look "on track" when
+    # the recurring AWS infrastructure spend underneath it wouldn't support that on
+    # its own. Status is therefore driven by infraTrailingAvg, not the blended figure.
     complete_months = [m for m in months_in_window if not (is_partial and m == current_month)]
     last_3_complete = complete_months[-3:]
     trailing_3mo_avg = None
     trailing_utilization_pct = None
+    infra_trailing_avg = None
+    infra_trailing_pct = None
     under_utilization_risk = False
     over_committed = False
     if len(last_3_complete) >= 2 and monthly_obligation:
-        trailing_vals = [_net_toward_edp_for_month(by_service, m, monthly_obligation) for m in last_3_complete]
+        breakdowns = [_edp_breakdown_for_month(by_service, m, monthly_obligation) for m in last_3_complete]
+        trailing_vals = [b['net_toward_edp'] for b in breakdowns]
+        infra_vals = [b['infrastructure_spend'] + b['one_time_spend'] for b in breakdowns]
+
         trailing_3mo_avg = round(statistics.mean(trailing_vals), 2)
         trailing_utilization_pct = trailing_3mo_avg / monthly_obligation * 100
-        under_utilization_risk = trailing_utilization_pct < 85
-        over_committed = trailing_utilization_pct > _EDP_OVER_COMMITTED_RATIO * 100
 
-    # Renewal-risk status is driven by the TRAILING complete-month average, never by
-    # the current month alone — a partial month's naturally-low to-date utilization
-    # (e.g. 10 of 30 days billed) would otherwise read as "at risk for renewal" even
-    # when trailing complete months are well above the obligation. Falls back to the
-    # current month's own status only when there isn't enough complete-month history
-    # yet to compute a trailing average (e.g. the first month or two of tracking).
-    if trailing_utilization_pct is not None:
-        status, status_label, status_color, on_track = classify_edp_status(trailing_utilization_pct)
+        infra_trailing_avg = round(statistics.mean(infra_vals), 2)
+        infra_trailing_pct = infra_trailing_avg / monthly_obligation * 100
+
+        # Renewal-risk flags are driven by the INFRASTRUCTURE-ONLY figure, same as
+        # `status` below — an irregular Marketplace purchase must never make these
+        # read "on track"/"over-committed" when recurring infra spend alone would not.
+        under_utilization_risk = infra_trailing_pct < 85
+        over_committed = infra_trailing_pct > _EDP_OVER_COMMITTED_RATIO * 100
+
+    # Renewal-risk status is driven by the INFRASTRUCTURE-ONLY trailing average, never
+    # by the current month alone and never by the Marketplace-inflated blended figure —
+    # a partial month's naturally-low to-date utilization (e.g. 10 of 30 days billed)
+    # would otherwise read as "at risk for renewal" even when trailing complete months
+    # are well above the obligation, and an irregular Marketplace purchase shouldn't
+    # paper over recurring infrastructure spend running below the commitment. Falls
+    # back to the current month's own status only when there isn't enough complete-
+    # month history yet to compute a trailing average (e.g. the first month or two).
+    if infra_trailing_pct is not None:
+        status, status_label, status_color, on_track = classify_edp_status(infra_trailing_pct)
     else:
         status, status_label, status_color, on_track = (
             edp['status'], edp['status_label'], edp['status_color'], edp['on_track'],
@@ -660,6 +695,9 @@ def compute_commitment_utilization(
         'overUnderAmount': round(edp['net_toward_edp'] - monthly_obligation, 2) if monthly_obligation else None,
         'trailing3MoAvg': trailing_3mo_avg,
         'trailingUtilizationPct': round(trailing_utilization_pct, 1) if trailing_utilization_pct is not None else None,
+        'infraTrailingAvg': infra_trailing_avg,
+        'infraTrailingPct': round(infra_trailing_pct, 1) if infra_trailing_pct is not None else None,
+        'monthsUsed': last_3_complete,
         'underUtilizationRisk': under_utilization_risk,
         'overCommitted': over_committed,
         'monthsRemaining': months_remaining,

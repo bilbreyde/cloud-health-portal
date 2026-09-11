@@ -145,11 +145,14 @@ For each anomaly, provide context:
 THRESHOLD-BASED OPPORTUNITIES:
 {opportunity_lines}
 
-EDP BURN RATE:
-Trailing 3-month average net spend toward EDP (complete months only, all spend minus AWS credits): \
-{_fmt(cu.get('trailing3MoAvg') or 0.0)}
+EDP BURN RATE (last 3 complete months: {', '.join(cu.get('monthsUsed') or [])}):
+- Trailing avg incl. software licensing (all spend minus AWS credits, Marketplace included): \
+{_fmt(cu.get('trailing3MoAvg') or 0.0)} ({cu.get('trailingUtilizationPct') if cu.get('trailingUtilizationPct') is not None else 'n/a'}% of obligation)
+- Trailing avg infrastructure only (Marketplace excluded — irregular, not a renewal-health signal): \
+{_fmt(cu.get('infraTrailingAvg') or 0.0)} ({cu.get('infraTrailingPct') if cu.get('infraTrailingPct') is not None else 'n/a'}% of obligation)
 Monthly obligation: {_fmt(cu['monthlyObligation'])}
-Status: {'AT RISK — below 85% threshold' if cu.get('underUtilizationRisk') else ('OVER-COMMITTED — strong renewal position' if cu.get('overCommitted') else 'ON TRACK')}
+Status (based on infrastructure-only trailing avg — Marketplace purchases are irregular and must not make \
+a burn rate look healthy when the underlying recurring spend wouldn't support it): {cu.get('statusLabel')}
 
 SIGNAL VS SPEND CORRELATIONS:
 {correlation_lines}
@@ -317,12 +320,12 @@ def _handle_get(req: func.HttpRequest, customer_id: str) -> func.HttpResponse:
     )
     if is_partial:
         days_elapsed, days_in_month = month_day_counts(current_month)
-        completion_pct = round(completion_ratio * 100, 1)
+        completion_pct = round(days_elapsed / days_in_month * 100, 1)
         prompt += (
             f"\n\nCurrent month ({current_month}) is {days_elapsed} of {days_in_month} days complete "
             f"({completion_pct}% of month). The spend figures shown are PROJECTED to full month based "
-            f"on daily run rate. Do not flag partial month spend as anomalies — compare only projected "
-            f"figures to prior full months."
+            f"on the prior full day's run rate (stabilized to avoid intraday swings). Do not flag "
+            f"partial month spend as anomalies — compare only projected figures to prior full months."
         )
     marketplace_events = [
         (m['month'], p)

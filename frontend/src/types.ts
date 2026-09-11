@@ -484,12 +484,20 @@ export interface SpendCommitmentUtilization {
   statusColor: ClassifierColor
   onTrack: boolean
   overUnderAmount: number | null
+  // Blended trailing average — everything net toward EDP, Marketplace included.
+  // Informational only; does NOT drive status (see infraTrailingPct below).
   trailing3MoAvg: number | null
-  // Drives status/statusLabel/statusColor/onTrack above — never utilizationPct
-  // (the current month alone), so a partial month's naturally-low to-date figure
-  // can't by itself read as "at risk for renewal". null only when there isn't yet
-  // enough complete-month history (2+) to compute a trailing average.
   trailingUtilizationPct: number | null
+  // Infrastructure-only trailing average (Marketplace excluded) — drives
+  // status/statusLabel/statusColor/onTrack/underUtilizationRisk/overCommitted above,
+  // never the blended figure or utilizationPct (current month alone), so an
+  // irregular Marketplace purchase can't make an under-utilized commitment read as
+  // healthy, and a partial month's naturally-low to-date figure can't by itself read
+  // as "at risk for renewal". null only when there isn't yet enough complete-month
+  // history (2+) to compute a trailing average.
+  infraTrailingAvg: number | null
+  infraTrailingPct: number | null
+  monthsUsed: string[]
   underUtilizationRisk: boolean
   overCommitted: boolean
   monthsRemaining: number | null

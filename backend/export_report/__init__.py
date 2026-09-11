@@ -388,16 +388,20 @@ def _build_docx(
                 'Over / Under Obligation',
                 (('+' if over_under >= 0 else '') + _fmt(over_under)),
             ])
-            _tbl_row(tbl_cu, ['Trailing 3-Month Average (net toward EDP)', _fmt(commitment_util.get('trailing3MoAvg', 0))])
+            _tbl_row(tbl_cu, ['3-Month Avg (incl. software licensing)', _fmt(commitment_util.get('trailing3MoAvg', 0))])
+            _tbl_row(tbl_cu, ['3-Month Avg (infrastructure only)', _fmt(commitment_util.get('infraTrailingAvg', 0))])
             months_remaining = commitment_util.get('monthsRemaining')
             if months_remaining is not None:
                 _tbl_row(tbl_cu, ['Months Remaining on Commitment', str(months_remaining)])
             _para(doc)
+            _para(doc, 'Status is based on infrastructure spend only — Marketplace purchases are excluded as '
+                       'they are irregular software licensing events, not a signal of recurring commitment health.',
+                  size=9, color=_GREY)
             if commitment_util.get('underUtilizationRisk'):
-                _para(doc, 'Risk: trailing 3-month average net spend toward EDP is below 85% of the monthly '
+                _para(doc, 'Risk: trailing 3-month average infrastructure spend is below 85% of the monthly '
                            'obligation — this commitment is at risk of under-utilization.')
             if commitment_util.get('overCommitted'):
-                _para(doc, 'Trailing 3-month average net spend toward EDP is above 110% of the monthly '
+                _para(doc, 'Trailing 3-month average infrastructure spend is above 110% of the monthly '
                            'obligation — strong renewal position, no action needed.')
             if commitment_util.get('expiryWarning'):
                 _para(doc, 'Renewal decision needed — commitment expires within 6 months; '

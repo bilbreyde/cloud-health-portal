@@ -288,13 +288,28 @@ function BurnSummaryCard({ insights }: { insights: SpendInsightsResponse }) {
               <td style={{ color: 'var(--green)' }}>−{fmtMoney(cu.creditsApplied)}</td>
             </tr>
             <tr>
-              <td style={{ fontWeight: 600 }}>3-month trailing avg</td>
+              <td style={{ fontWeight: 600 }}>3-month avg (incl. software licensing)</td>
               <td>
                 {cu.trailing3MoAvg !== null ? (
                   <>
                     {fmtMoney(cu.trailing3MoAvg)}
                     {cu.trailingUtilizationPct !== null && (
                       <span style={{ color: 'var(--muted)', fontWeight: 600 }}> — {cu.trailingUtilizationPct.toFixed(1)}%</span>
+                    )}
+                  </>
+                ) : (
+                  <span style={{ color: 'var(--muted)' }}>Not enough complete-month history yet</span>
+                )}
+              </td>
+            </tr>
+            <tr>
+              <td style={{ fontWeight: 600 }}>3-month avg (infra. only)</td>
+              <td>
+                {cu.infraTrailingAvg !== null ? (
+                  <>
+                    {fmtMoney(cu.infraTrailingAvg)}
+                    {cu.infraTrailingPct !== null && (
+                      <span style={{ color: 'var(--muted)', fontWeight: 600 }}> — {cu.infraTrailingPct.toFixed(1)}%</span>
                     )}
                     {' '}
                     <span className={`badge ${EDP_STATUS_BADGE_CLS[cu.status]}`}>{cu.statusLabel.toUpperCase()}</span>
@@ -307,6 +322,12 @@ function BurnSummaryCard({ insights }: { insights: SpendInsightsResponse }) {
           </tbody>
         </table>
       </div>
+      {cu.infraTrailingAvg !== null && (
+        <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 8 }}>
+          Status based on infrastructure spend — Marketplace purchases excluded as they are irregular software
+          licensing events.
+        </div>
+      )}
     </div>
   )
 }
@@ -664,12 +685,15 @@ export default function SpendInsights() {
                       padding: '12px 14px', background: 'var(--bg)', borderRadius: 6,
                       border: '1px solid var(--border)', marginBottom: 12, fontSize: 13, lineHeight: 1.6,
                     }}>
-                      3-month trailing avg (net toward EDP): <strong>{fmtMoney(cu.trailing3MoAvg)}</strong> —{' '}
-                      <span style={{
-                        color: cu.underUtilizationRisk ? 'var(--red)' : 'var(--green)', fontWeight: 700,
-                      }}>
-                        {cu.underUtilizationRisk ? 'At Risk for renewal' : cu.overCommitted ? 'Over-Committed — Strong Renewal Position' : 'On Track'}
-                      </span>
+                      <div>3-month avg incl. software licensing: <strong>{fmtMoney(cu.trailing3MoAvg)}</strong></div>
+                      <div>
+                        3-month avg infrastructure only: <strong>{fmtMoney(cu.infraTrailingAvg ?? 0)}</strong> —{' '}
+                        <span className={`badge ${EDP_STATUS_BADGE_CLS[cu.status]}`}>{cu.statusLabel.toUpperCase()}</span>
+                      </div>
+                      <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 4 }}>
+                        Status based on infrastructure spend — Marketplace purchases excluded as they are
+                        irregular software licensing events.
+                      </div>
                     </div>
                   )}
 
