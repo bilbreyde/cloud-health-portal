@@ -30,7 +30,16 @@ def reconcile(customer_id: str, snapshot_date: str) -> dict:
     instances = cosmos_client.list_inventory_instances(customer_id, snapshot_date)
     inv_by_id = {i.instanceId: i for i in instances if i.instanceId}
 
-    terminated: list[dict] = []
+    # Same Instance Name + Account can appear more than once in the exceptions
+    # register — CloudHealth recalculates each instance's projected cost every time
+    # the register is exported, so a re-import (or a register that already listed
+    # an instance twice) produces near-duplicate rows that differ only in cost.
+    # Deduplicated by the (instanceName, accountName) pair — instanceId isn't a
+    # reliable key here since a terminated instance's id is sometimes blank/stale
+    # in the register — keeping the highest monthly cost as the more conservative
+    # (larger) savings estimate.
+    terminated_by_key: dict[tuple, dict] = {}
+    duplicates_removed = 0
     rightsized: list[dict] = []
     active_unchanged: list[dict] = []
 
@@ -38,7 +47,7 @@ def reconcile(customer_id: str, snapshot_date: str) -> dict:
         inv = inv_by_id.get(exc.instanceId) if exc.instanceId else None
 
         if inv is None:
-            terminated.append({
+            record = {
                 'instanceId': exc.instanceId,
                 'instanceName': exc.instanceName,
                 'accountName': exc.accountName,
@@ -48,7 +57,15 @@ def reconcile(customer_id: str, snapshot_date: str) -> dict:
                 'originalMonthlyCost': round(exc.projectedCostPerMonth, 2),
                 'appOwner': exc.appOwner,
                 'notes': exc.notes,
-            })
+            }
+            key = (exc.instanceName.strip().lower(), exc.accountName.strip().lower())
+            existing = terminated_by_key.get(key)
+            if existing is None:
+                terminated_by_key[key] = record
+            else:
+                duplicates_removed += 1
+                if record['originalMonthlyCost'] > existing['originalMonthlyCost']:
+                    terminated_by_key[key] = record
         elif inv.apiName and exc.apiName and inv.apiName != exc.apiName:
             savings = estimate_rightsizing_savings(exc.apiName, inv.apiName)
             if savings is not None:
@@ -80,6 +97,7 @@ def reconcile(customer_id: str, snapshot_date: str) -> dict:
                 'appOwner': exc.appOwner,
             })
 
+    terminated = list(terminated_by_key.values())
     terminated.sort(key=lambda r: -r['originalMonthlyCost'])
     active_unchanged.sort(key=lambda r: -r['monthlyCost'])
 
@@ -98,6 +116,7 @@ def reconcile(customer_id: str, snapshot_date: str) -> dict:
             'rightsizedMonthlySavings': rightsized_savings,
             'activeUnchangedMonthlyCost': active_cost,
             'totalRealizedSavings': round(terminated_savings + rightsized_savings, 2),
+            'duplicatesRemoved': duplicates_removed,
         },
         'terminated': terminated,
         'rightsized': rightsized,

@@ -222,6 +222,11 @@ export interface ReconciliationSummary {
   rightsizedMonthlySavings: number
   activeUnchangedMonthlyCost: number
   totalRealizedSavings: number
+  // Count of exceptions-register rows collapsed into an existing terminated entry
+  // because they shared the same Instance Name + Account (CloudHealth recalculates
+  // projected cost on every export, so a re-imported/duplicated register row is
+  // otherwise counted — and its cost double-summed — as a second terminated instance).
+  duplicatesRemoved: number
 }
 
 export interface ReconciliationReport {

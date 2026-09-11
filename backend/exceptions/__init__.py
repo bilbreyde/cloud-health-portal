@@ -74,6 +74,11 @@ def _handle_summary(customer_id: str) -> func.HttpResponse:
     return cors_response(summary)
 
 
+def _handle_deduplicate(customer_id: str) -> func.HttpResponse:
+    result = cosmos_client.deduplicate_exceptions(customer_id)
+    return cors_response(result)
+
+
 def _handle_import(req: func.HttpRequest, customer_id: str) -> func.HttpResponse:
     now = datetime.now(timezone.utc)
 
@@ -152,6 +157,8 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
 
         if method == 'GET' and action == 'summary':
             return _handle_summary(customer_id)
+        if method == 'GET' and action == 'deduplicate':
+            return _handle_deduplicate(customer_id)
         if method == 'GET' and not action:
             return _handle_list(customer_id)
         if method == 'POST' and action == 'import':

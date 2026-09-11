@@ -422,6 +422,42 @@ def delete_exception(exception_id: str, customer_id: str) -> None:
     container.delete_item(item=exception_id, partition_key=customer_id)
 
 
+def deduplicate_exceptions(customer_id: str) -> dict:
+    """Finds exceptions sharing the same instanceId and keeps only the one with the
+    highest projectedCostPerMonth (the most conservative savings estimate), deleting
+    the rest. A blank instanceId is never treated as a duplicate key — many rows can
+    legitimately share an empty id.
+
+    Returns {duplicatesFound, duplicatesRemoved, remaining} — duplicatesFound is the
+    number of distinct instanceIds that had more than one record; duplicatesRemoved
+    is the total number of extra records deleted across all of them.
+    """
+    exc_list = list_exceptions(customer_id)
+
+    by_instance_id: dict[str, list] = {}
+    for e in exc_list:
+        if not e.instanceId:
+            continue
+        by_instance_id.setdefault(e.instanceId, []).append(e)
+
+    duplicates_found = 0
+    duplicates_removed = 0
+    for group in by_instance_id.values():
+        if len(group) <= 1:
+            continue
+        duplicates_found += 1
+        group.sort(key=lambda e: -e.projectedCostPerMonth)
+        for extra in group[1:]:
+            delete_exception(extra.id, customer_id)
+            duplicates_removed += 1
+
+    return {
+        'duplicatesFound': duplicates_found,
+        'duplicatesRemoved': duplicates_removed,
+        'remaining': len(exc_list) - duplicates_removed,
+    }
+
+
 def exceptions_summary(customer_id: str) -> dict:
     exc_list = list_exceptions(customer_id)
     total_cost = round(sum(e.projectedCostPerMonth for e in exc_list), 2)

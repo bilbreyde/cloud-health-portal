@@ -320,10 +320,20 @@ export default function ExceptionTracker() {
               <div style={{ fontSize: 11, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '.5px', marginBottom: 6 }}>
                 🔴 Terminated
               </div>
-              <div style={{ fontSize: 32, fontWeight: 700, color: 'var(--green)' }}>{report.summary.terminated.toLocaleString()}</div>
+              <div style={{ fontSize: 32, fontWeight: 700, color: 'var(--green)' }}>
+                {report.summary.terminated.toLocaleString()}
+                {report.summary.duplicatesRemoved > 0 && (
+                  <span style={{ fontSize: 13, fontWeight: 400, color: 'var(--muted)' }}> (after deduplication)</span>
+                )}
+              </div>
               <div style={{ fontSize: 12, color: 'var(--muted)', marginTop: 4 }}>
                 {fmtMoney(report.summary.terminatedMonthlySavings)}/month savings realized
               </div>
+              {report.summary.duplicatesRemoved > 0 && (
+                <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 2 }}>
+                  Duplicates removed: {report.summary.duplicatesRemoved}
+                </div>
+              )}
             </div>
             <div className="card" style={{ margin: 0, textAlign: 'center' }}>
               <div style={{ fontSize: 11, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '.5px', marginBottom: 6 }}>
