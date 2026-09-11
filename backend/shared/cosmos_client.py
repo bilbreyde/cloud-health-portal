@@ -7,7 +7,14 @@ from typing import Optional
 from azure.cosmos import CosmosClient, PartitionKey, exceptions
 
 from .models import CostHistoryRecord, Customer, ExceptionRecord, InventoryInstance, InventorySnapshot, MarketplacePurchase, Report, SavingsCoverage, Template, TrendData, Upload
-from .cost_classifier import END_OF_MONTH_CHARGES, classify_charge_bucket, classify_service, should_suppress_for_partial_month
+from .cost_classifier import (
+    END_OF_MONTH_CHARGES,
+    classify_charge_bucket,
+    classify_service,
+    is_support_fee_charge,
+    is_variable_adjustment_charge,
+    should_suppress_for_partial_month,
+)
 from .cost_classifier import project_amount as classify_project_amount
 from .spend_insights_engine import is_partial_month, project_amount
 
@@ -595,15 +602,21 @@ def get_cost_history_summary(customer_id: str, months: list) -> dict:
     by_service_month: dict[str, dict[str, float]] = {}
 
     # Charge-bucket totals (infrastructure / one_time / billing_adjustment / sp_true_up)
-    # per shared.cost_classifier.classify_charge_bucket — drives infrastructureSpend,
-    # oneTimeCharges, billingAdjustments, spTrueUp, totalBilled and netBilled below.
+    # per shared.cost_classifier.classify_charge_bucket, by SERVICE NAME ONLY — drives
+    # infrastructureSpend, oneTimeCharges, billingAdjustments, spTrueUp, totalBilled
+    # and netBilled below. CloudHealth's Direct/Indirect CSV section (r.chargeType)
+    # plays no part in this — it's used elsewhere below only for the Savings Plan
+    # coverage % calc, which is a genuinely separate concern.
     bucket_by_month: dict[str, dict[str, float]] = {
-        m: {
-            'infrastructure': 0.0, 'one_time': 0.0, 'billing_adjustment': 0.0, 'sp_true_up': 0.0,
-            'support_fee': 0.0, 'variable_adjustment': 0.0,
-        }
+        m: {'infrastructure': 0.0, 'one_time': 0.0, 'billing_adjustment': 0.0, 'sp_true_up': 0.0}
         for m in months_sorted
     }
+    # Sub-totals within the buckets above, for the two named END_OF_MONTH_CHARGES
+    # (Enterprise Support, AWS Partner Pricing Adjustment) that get their own
+    # historical-%-projected figure — decoupled from the coarse bucket a charge
+    # lands in (see cost_classifier.is_support_fee_charge/is_variable_adjustment_charge).
+    support_fee_by_month: dict[str, float] = {m: 0.0 for m in months_sorted}
+    variable_adjustment_by_month: dict[str, float] = {m: 0.0 for m in months_sorted}
     gross_by_month: dict[str, float] = {m: 0.0 for m in months_sorted}  # sum of positive-amount lines only
 
     for r in records:
@@ -613,6 +626,12 @@ def get_cost_history_summary(customer_id: str, months: list) -> dict:
         # any bucket, not by_service_month (so they don't surface in byService/anomalies/
         # opportunities either). Prior closed months are unaffected.
         if is_partial and r.month == current_month and should_suppress_for_partial_month(r.service):
+            continue
+
+        # A CSV section-subtotal row (e.g. a stray "Total" line from data imported
+        # before the parser started dropping it) is not a service — never sum it.
+        bucket = classify_charge_bucket(r.service)
+        if bucket == 'skip':
             continue
 
         normalized_service = re.sub(r'\s+', ' ', r.service.strip().lower())
@@ -627,8 +646,11 @@ def get_cost_history_summary(customer_id: str, months: list) -> dict:
         by_service_month.setdefault(r.service, {})
         by_service_month[r.service][r.month] = by_service_month[r.service].get(r.month, 0.0) + r.amount
 
-        bucket = classify_charge_bucket(r.service)
         bucket_by_month[r.month][bucket] = bucket_by_month[r.month].get(bucket, 0.0) + r.amount
+        if is_support_fee_charge(r.service):
+            support_fee_by_month[r.month] = support_fee_by_month.get(r.month, 0.0) + r.amount
+        if is_variable_adjustment_charge(r.service):
+            variable_adjustment_by_month[r.month] = variable_adjustment_by_month.get(r.month, 0.0) + r.amount
         if r.amount > 0:
             gross_by_month[r.month] = gross_by_month.get(r.month, 0.0) + r.amount
 
@@ -656,11 +678,11 @@ def get_cost_history_summary(customer_id: str, months: list) -> dict:
         billing_adjustments = round(buckets.get('billing_adjustment', 0.0), 2)
         # Recurring, but not infrastructure — support fees (Enterprise Support) and
         # variable adjustments (AWS Partner Pricing Adjustment) that scale with total
-        # spend. Counted toward EDP/net billed, projected linearly on a partial month,
-        # but never folded into infrastructure_spend so they can't distort the
-        # infrastructure MoM trend.
-        support_fees = round(buckets.get('support_fee', 0.0), 2)
-        variable_adjustments = round(buckets.get('variable_adjustment', 0.0), 2)
+        # spend. Counted toward EDP/net billed (via the one_time/billing_adjustment
+        # buckets above) and projected linearly on a partial month, but never folded
+        # into infrastructure_spend so they can't distort the infrastructure MoM trend.
+        support_fees = round(support_fee_by_month.get(m, 0.0), 2)
+        variable_adjustments = round(variable_adjustment_by_month.get(m, 0.0), 2)
         total_billed = round(gross_by_month.get(m, 0.0), 2)   # gross: positive-amount lines only
         net_billed = net                                       # net: everything summed, credits already netted in
 
@@ -735,11 +757,11 @@ def get_cost_history_summary(customer_id: str, months: list) -> dict:
         current_entry = monthly_totals_by_month[current_month]
         current_entry['projectedSupportFees'] = round(sum(
             _project_service(svc, vals.get(current_month, 0.0))
-            for svc, vals in by_service_month.items() if classify_charge_bucket(svc) == 'support_fee'
+            for svc, vals in by_service_month.items() if is_support_fee_charge(svc)
         ), 2)
         current_entry['projectedVariableAdjustments'] = round(sum(
             _project_service(svc, vals.get(current_month, 0.0))
-            for svc, vals in by_service_month.items() if classify_charge_bucket(svc) == 'variable_adjustment'
+            for svc, vals in by_service_month.items() if is_variable_adjustment_charge(svc)
         ), 2)
         for svc_name in END_OF_MONTH_CHARGES:
             raw = by_service_month.get(svc_name, {}).get(current_month, 0.0)

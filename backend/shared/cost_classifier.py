@@ -443,73 +443,100 @@ def optional_matched_rule(service_name: str) -> Optional[str]:
 
 # ── charge-bucket classification (cost_history GET / dashboard / EDP) ─────────
 #
-# A second, coarser classification used specifically for the four cost_history
-# reporting buckets: infrastructure (trending + EDP), one_time (shown separately,
-# never trended or projected), billing_adjustment (footnote only), and sp_true_up
-# (Savings Plan / RI true-up lines that are billing-lag-distorted mid-month and
-# must be suppressed on partial months). This is deliberately a separate function
-# from classify_service — the two disagree on a few services on purpose (e.g. AWS
-# Partner Pricing Adjustment is "one_time" for anomaly detection but
-# "billing_adjustment" here; Savings Plan - Unused is "one_time" for anomalies but
-# "sp_true_up" here) because the bucket a service belongs to for cost_history
-# trending isn't always the same bucket it belongs to for anomaly flagging.
+# A second, coarser classification used specifically for the cost_history reporting
+# buckets: infrastructure (trending + EDP), one_time (shown separately, never
+# trended or projected), billing_adjustment (footnote only), sp_true_up (Savings
+# Plan / RI true-up lines that are billing-lag-distorted mid-month and must be
+# suppressed on partial months), and skip (CSV section-subtotal rows that are not
+# a real service). This is deliberately a separate function from classify_service —
+# the two disagree on a few services on purpose (e.g. AWS Partner Pricing Adjustment
+# is "one_time" for anomaly detection but "billing_adjustment" here) because the
+# bucket a service belongs to for cost_history trending isn't always the same
+# bucket it belongs to for anomaly flagging.
+#
+# Classification is by SERVICE NAME ONLY — CloudHealth's Direct/Indirect CSV
+# section does not line up with infrastructure vs. one-time (e.g. Virtual Private
+# Cloud - Transit Gateway, Amazon Rekognition, and CloudWatch all post to the
+# Indirect section but are recurring infrastructure spend all the same). There is
+# deliberately no explicit "infrastructure" name list to maintain — every service
+# not matched by one of the more specific buckets below defaults to infrastructure,
+# so a new/unrecognized AWS service is never silently dropped from the trend.
 
 CHARGE_BUCKET_ONE_TIME = [
-    'Amazon Marketplace',
-    'AWS Marketplace',
-    'AWS Config',
-    'AWS CloudTrail',
-    'Certificate Manager',
+    'amazon marketplace',
+    'aws marketplace',
+    'enterprise support',
+    'aws support',
 ]
 
-# Recurring, but not infrastructure — support/management fees that accrue monthly
-# (often as a % of total spend) rather than for a specific compute/storage resource.
-# Included in EDP utilization and projected linearly on a partial month, but kept
-# out of infrastructureSpend so they never distort the infrastructure MoM trend.
-CHARGE_BUCKET_SUPPORT_FEE = [
-    'Enterprise Support',
-    'AWS Support',
+# AWS billing adjustments that scale with total monthly spend (a correction/reversal,
+# not a purchase) — footnoted separately, never trended as infrastructure.
+CHARGE_BUCKET_BILLING_ADJUSTMENT = [
+    'aws partner pricing adjustment',
+    'aws marketplace partner pricing adjustment reversal',
+    'late fee reversal',
 ]
 
-# AWS billing adjustments that scale with total monthly spend (not a flat one-time
-# correction) — same treatment as support fees: counted toward EDP, projected
-# linearly on a partial month, excluded from the infrastructure MoM trend.
-_VARIABLE_ADJUSTMENT_NAMES = ['aws partner pricing adjustment']
-
-_SP_TRUE_UP_KEYWORDS = ['negation', 'ri credit', 'ri volume discount', 'reserved instance']
-_SP_TRUE_UP_NAMES = [
+# Savings Plan / RI true-up lines — billing-lag artifacts that resolve at month-end
+# true-up, suppressed entirely on a partial month (see should_suppress_for_partial_month).
+CHARGE_BUCKET_SP_TRUE_UP = [
     'savings plan - unused',
     'database savings plan - unused',
     'compute savings plan - unused',
+    'savings plan negation',
+    'savings plan - negation',
+    'savings plan - edp credits',
+    'ri unused',
+    'reserved instance',
 ]
 
-_BILLING_ADJUSTMENT_KEYWORDS = ['refund', 'credit']
+# CSV section-subtotal rows (e.g. a trailing "Total" line) — not a real service,
+# must never be summed into any bucket.
+CHARGE_BUCKET_SKIP = ['total']
+
+# Support fees (Enterprise Support) and variable adjustments (AWS Partner Pricing
+# Adjustment) are both END_OF_MONTH_CHARGES (see above) that get their own
+# historical-%-projected sub-total in cost_history's monthly totals — decoupled
+# from the coarse bucket above so that projection logic still works regardless of
+# which bucket (one_time / billing_adjustment) a given charge is folded into.
+_SUPPORT_FEE_NAMES = ['enterprise support', 'aws support']
+_VARIABLE_ADJUSTMENT_NAMES = ['aws partner pricing adjustment']
 
 
-def classify_charge_bucket(service_name: str) -> str:
-    """Returns one of: 'infrastructure' | 'one_time' | 'billing_adjustment' | 'sp_true_up'
-    | 'support_fee' | 'variable_adjustment'."""
-    service_lower = service_name.lower()
+def is_support_fee_charge(service_name: str) -> bool:
+    return any(name in service_name.lower() for name in _SUPPORT_FEE_NAMES)
 
-    # SP true-up checked first — "Negation Credit(s)" would otherwise match the
-    # generic "credit" billing-adjustment keyword below.
-    if any(name in service_lower for name in _SP_TRUE_UP_NAMES):
+
+def is_variable_adjustment_charge(service_name: str) -> bool:
+    return any(name in service_name.lower() for name in _VARIABLE_ADJUSTMENT_NAMES)
+
+
+def classify_charge_bucket(service_name: str, charge_type: Optional[str] = None) -> str:
+    """Returns one of: 'infrastructure' | 'one_time' | 'billing_adjustment' | 'sp_true_up' | 'skip'.
+
+    By SERVICE NAME ONLY — `charge_type` (CloudHealth's Direct/Indirect CSV section)
+    is accepted for call-site convenience but always ignored; it does not correspond
+    to infrastructure vs. one-time (see module comment above).
+    """
+    service_lower = service_name.strip().lower()
+
+    if service_lower in CHARGE_BUCKET_SKIP:
+        return 'skip'
+
+    # SP true-up checked first — "Savings Plan Negation Credits" would otherwise
+    # match the generic "credit"/"negation" wording of a billing adjustment.
+    if any(name in service_lower for name in CHARGE_BUCKET_SP_TRUE_UP):
         return 'sp_true_up'
-    if any(k in service_lower for k in _SP_TRUE_UP_KEYWORDS):
-        return 'sp_true_up'
 
-    if _matches_any(service_lower, CHARGE_BUCKET_SUPPORT_FEE):
-        return 'support_fee'
-
-    if any(name in service_lower for name in _VARIABLE_ADJUSTMENT_NAMES):
-        return 'variable_adjustment'
-
-    if _matches_any(service_lower, CHARGE_BUCKET_ONE_TIME):
-        return 'one_time'
-
-    if any(k in service_lower for k in _BILLING_ADJUSTMENT_KEYWORDS):
+    if any(name in service_lower for name in CHARGE_BUCKET_BILLING_ADJUSTMENT):
         return 'billing_adjustment'
 
+    if any(name in service_lower for name in CHARGE_BUCKET_ONE_TIME):
+        return 'one_time'
+
+    # Everything else — including every recurring service CloudHealth happens to
+    # post under the Indirect section (VPC, Rekognition, CloudWatch, Connect,
+    # GuardDuty, AWS Config, CloudTrail, ...) — is infrastructure.
     return 'infrastructure'
 
 
